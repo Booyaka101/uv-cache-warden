@@ -10,6 +10,8 @@ uv's cache grows and never shrinks on its own. [astral-sh/uv#5731](https://githu
 
 So the workaround people write by hand is: measure the cache, work out what to drop, call `uv cache clean` per package, prune. That is what this does, properly.
 
+The open upstream PR, [#20116](https://github.com/astral-sh/uv/pull/20116), makes `uv cache prune` run itself. That helps the long-lived server case, but prune only removes archives nothing links to, and the caches above are full of old versions that are still linked. A budget over referenced packages stays an external job.
+
 uv's docs say it is [never safe to modify the cache directly](https://docs.astral.sh/uv/concepts/cache/). uv-cache-warden never unlinks a file. Every deletion is a `uv cache clean <package>` or one final `uv cache prune`, and it never passes uv's `--force`, so uv keeps blocking on the cache lock the way it is designed to.
 
 ## Install

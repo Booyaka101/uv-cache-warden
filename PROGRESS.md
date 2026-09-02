@@ -61,7 +61,7 @@ or post as is. It discloses the AI help in the last line.
 
 ### Draft comment for astral-sh/uv#5731
 
-> For anyone who needs a cap before #20116 lands: [uv-cache-warden](https://github.com/Booyaka101/uv-cache-warden) puts a size budget on the cache from outside. Every deletion is `uv cache clean <pkg>` or one `uv cache prune`, so it never touches the cache directly and never passes `--force`.
+> For anyone who needs an actual cap: [uv-cache-warden](https://github.com/Booyaka101/uv-cache-warden) puts a size budget on the cache from outside. Every deletion is `uv cache clean <pkg>` or one `uv cache prune`, so it never touches the cache directly and never passes `--force`.
 >
 > ```
 > uvx uv-cache-warden report                                  # per-package size, share, last used
@@ -75,11 +75,14 @@ or post as is. It discloses the AI help in the last line.
 >
 > Stdlib only, Python 3.9+, and there is a composite action for runners that keep a cache between jobs. CI runs the same acceptance checks on Linux, macOS and Windows.
 >
-> Happy to retire it the day autoprune ships. Built with a good deal of help from Claude; the numbers above are from running it against real caches.
+> Worth being clear about the overlap with #20116: that PR makes `uv cache prune` run itself, which is the right fix for the long-lived MCP server case, but it still only removes unreferenced archives. Old versions kept by weekly upgrades and the CUDA wheels in #16551 are referenced, so prune leaves them and so will autoprune. A size budget over referenced packages is the part that stays external, and it is the part this does.
+>
+> Built with a good deal of help from Claude; the numbers above are from running it against real caches.
 
-Two upstream facts that bear on the comment: PR astral-sh/uv#20116 (autoprune behind a preview
-flag) is still open as of today, and `uv 0.12.9` has no size or age flag on any cache command.
-The comment says so and offers to retire the tool when autoprune ships.
+Two upstream facts that bear on the comment: PR astral-sh/uv#20116 is still open as of today and,
+read in full, adds automatic *pruning of unreferenced archives* behind a preview flag; it adds no
+size, age or LRU logic (the diff never mentions size). `uv 0.12.9` has no size or age flag on any
+cache command. The comment says so rather than promising to retire when it lands.
 
 To move the publish workflow to Trusted Publishing later: on pypi.org add a publisher for
 `Booyaka101/uv-cache-warden`, workflow `publish.yml`, environment `pypi`, then delete the
