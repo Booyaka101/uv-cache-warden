@@ -87,8 +87,12 @@ def test_dry_run_invokes_no_mutating_command(cache):
 def test_dry_run_and_real_run_agree_on_the_eviction_list(cache):
     layout = build_three(cache)
     budget = measured(layout) - 350_000
-    dry = gc.run(layout, FakeUv(cache_dir=layout.root, size=lambda: measured(layout)), budget=budget, dry_run=True)
-    wet = gc.run(layout, FakeUv(cache_dir=layout.root, size=lambda: measured(layout)), budget=budget)
+
+    def uv():
+        return FakeUv(cache_dir=layout.root, size=lambda: measured(layout))
+
+    dry = gc.run(layout, uv(), budget=budget, dry_run=True)
+    wet = gc.run(layout, uv(), budget=budget)
 
     assert [item.name for item in dry.evicted] == [item.name for item in wet.evicted]
 

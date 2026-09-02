@@ -11,7 +11,13 @@ from typing import Dict, List, Optional, Tuple
 
 from . import attribute
 from .attribute import Attribution
-from .discovery import NAME_INDEXED, PROTECTED_PREFIXES, CacheLayout, bucket_prefix
+from .discovery import (
+    METADATA_BUCKETS,
+    NAME_INDEXED,
+    PROTECTED_PREFIXES,
+    CacheLayout,
+    bucket_prefix,
+)
 from .sizing import Counter, Usage, format_age, format_size, walk
 from .uvcmd import Uv, UvError
 
@@ -124,7 +130,10 @@ def scan(layout: CacheLayout, uv: Optional[Uv] = None) -> Scan:
         if package is None:
             package = PackageUsage(name=owner, usage=Usage())
             result.packages[owner] = package
-        package.usage.merge(entry_usage)
+        # Simple-index metadata is rewritten for every package in a project whenever uv
+        # re-resolves, so letting it set the clock would make a whole lockfile look hot. Its
+        # bytes still count; only its timestamp is ignored.
+        package.usage.merge(entry_usage, with_time=bucket not in METADATA_BUCKETS)
 
     for name, package in result.packages.items():
         package.versions = len(attribution.package_versions.get(name, ()))

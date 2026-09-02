@@ -1,9 +1,9 @@
-# Phase 0 — resource verification
+# Phase 0, resource verification
 
 Every claim the brief depends on was fetched and checked before any code was written.
 Verified 2026-09-02 against `uv 0.12.9 (9f9286029 2026-09-01 x86_64-pc-windows-msvc)`.
 
-## 1. `uv` has no size or age flag — https://docs.astral.sh/uv/reference/cli/
+## 1. `uv` has no size or age flag, https://docs.astral.sh/uv/reference/cli/
 
 `uv cache clean`, `uv cache prune`, `uv cache size` and `uv cache dir` each accept only the
 global option set (`--cache-dir`, `--color`, `--config-file`, `--directory`, `--offline`,
@@ -16,7 +16,7 @@ Cache directory default, quoted:
 > Defaults to `$XDG_CACHE_HOME/uv` or `$HOME/.cache/uv` on macOS and Linux, and
 > `%LOCALAPPDATA%\uv\cache` on Windows.
 
-## 2. Argument definitions — crates/uv-cli/src/lib.rs
+## 2. Argument definitions, crates/uv-cli/src/lib.rs
 
 ```rust
 pub struct CleanArgs {
@@ -44,7 +44,7 @@ pub struct SizeArgs {
 Confirmed live: `uv cache clean --help` shows `[PACKAGE]...` and `--force`.
 `uv cache size --output-format machine` prints a bare integer on stdout.
 
-## 3. Bucket names — crates/uv-cache/src/lib.rs `CacheBucket::to_str`
+## 3. Bucket names, crates/uv-cache/src/lib.rs `CacheBucket::to_str`
 
 ```rust
 Self::SourceDistributions => "sdists-v9",
@@ -94,7 +94,7 @@ impl Display for Link {
 }
 ```
 
-Confirmed on disk here — `wheels-v6/pypi/rich/13.7.1-py3-none-any` is a 27-byte **regular file**
+Confirmed on disk here, `wheels-v6/pypi/rich/13.7.1-py3-none-any` is a 27-byte **regular file**
 (`os.readlink` raises `WinError 4390: not a reparse point`) whose entire content is:
 
 ```
@@ -103,7 +103,7 @@ archive-v0/NoF3pkNqtljOzBKI
 
 `attribute.py` therefore resolves both shapes.
 
-## 5. Sizing rule — crates/uv-cache/src/removal.rs
+## 5. Sizing rule, crates/uv-cache/src/removal.rs
 
 ```rust
 /// Estimate the storage reclaimed by removing a non-directory entry.
@@ -134,13 +134,18 @@ diskus defaults (`CountType::DiskUsage`, `Directories::Auto`) mean:
 | | file bytes | directories | hardlink dedupe |
 |---|---|---|---|
 | Unix | `st_blocks * 512` | counted (`st_blocks * 512`) | yes, by `(dev, ino)`, only when `nlink > 1` |
-| Windows | `metadata.len()` | counted, contribute 0 | **none** ([diskus#32](https://github.com/sharkdp/diskus/issues/32)) |
+| Windows | `metadata.len()` | counted, at their NTFS index allocation | **none** ([diskus#32](https://github.com/sharkdp/diskus/issues/32)) |
+
+Measured, not assumed: excluding Windows directories from the total left us 139,264 bytes short
+of `uv cache size` on a 7 MiB cache, because NTFS reports a directory's index allocation through
+`st_size` once the index stops being resident. Including them made the two totals identical at
+7,344,134 bytes.
 
 `sizing.py` reproduces this exactly as `disk_bytes`, which is the metric `uvcw gc` budgets
 against. It separately reports `physical_bytes` (inode dedupe on *both* platforms, the brief's
 mandatory rule) and `reclaim_bytes` (uv's own `file_size` above).
 
-## 7. Safety contract — https://docs.astral.sh/uv/concepts/cache/
+## 7. Safety contract, https://docs.astral.sh/uv/concepts/cache/
 
 > It's never safe to modify the cache directly (e.g., by removing a file or directory).
 > `uv cache prune` removes all unused cache entries and all centralized project environments.
@@ -151,7 +156,7 @@ mandatory rule) and `reclaim_bytes` (uv's own `file_size` above).
 uv-cache-warden never unlinks anything. Every deletion is a `uv cache clean <pkg>` or a single
 `uv cache prune`, and `--force` is never passed.
 
-## 8. Demand — astral-sh/uv#5731
+## 8. Demand, astral-sh/uv#5731
 
 `gh api repos/astral-sh/uv/issues/5731`:
 
@@ -174,7 +179,7 @@ uv-cache-warden never unlinks anything. Every deletion is a `uv cache clean <pkg
 > bits, we often use `uv sync` and one my colleagues has encountered the cache now routinely
 > exceeding 1TB+.
 
-## 9. Prune alone cannot reclaim orphaned tool deps — astral-sh/uv#16551
+## 9. Prune alone cannot reclaim orphaned tool deps, astral-sh/uv#16551
 
 `gh api repos/astral-sh/uv/issues/16551`: `state: closed`, `state_reason: not_planned`,
 opened 2025-11-02. Body:
@@ -194,4 +199,4 @@ build. `pypi.org/pypi/uv-cache-warden/json` returns **404**, so the name is avai
 
 `C:\Users\cbosc\claude-phone\ideas\LESSONS.md` read. Nothing in it contradicts this brief. The
 relevant entry is 2026-08-11: this PC's bare `python` is 3.11.9, so anything needing a newer
-interpreter runs through `py -3.12`. Applied — the dev venv is 3.12.
+interpreter runs through `py -3.12`. Applied, the dev venv is 3.12.

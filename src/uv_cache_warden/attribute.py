@@ -213,7 +213,7 @@ def _valid(name: str) -> Optional[str]:
 
 
 def _strip_rkyv(name: str) -> Optional[str]:
-    """The simple index stores exactly one `<package>.rkyv` per package; `.lock` siblings are not."""
+    """The simple index stores one `<package>.rkyv` per package; a `.lock` sibling is not one."""
     if not name.endswith(".rkyv"):
         return None
     return _valid(name[:-5])

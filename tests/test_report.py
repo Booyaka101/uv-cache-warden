@@ -1,4 +1,5 @@
 import json
+import os
 import time
 
 from uv_cache_warden import report
@@ -103,3 +104,15 @@ def test_sort_orders(cache):
     assert [p.name for p in result.sorted_packages(report.SORT_AGE)] == ["cold", "big"]
     assert [p.name for p in result.sorted_packages(report.SORT_NAME)] == ["big", "cold"]
     assert report.render(result, top=1, sort=report.SORT_AGE).splitlines()[1].startswith("cold")
+
+
+def test_simple_index_metadata_does_not_reset_the_clock(cache):
+    """`uv lock` rewrites simple-index entries wholesale; that must not make a cold package hot."""
+    now = time.time()
+    cache.add_package("cold", size=50_000, mtime=now - 200 * HOUR)
+    fresh = cache.root / "simple-v24" / "pypi" / "cold.rkyv"
+    os.utime(str(fresh), (now, now))
+    result = report.scan(cache.layout())
+
+    assert result.age_of(result.packages["cold"]) > 100 * HOUR
+    assert result.packages["cold"].usage.disk_bytes >= 50_000

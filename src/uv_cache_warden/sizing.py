@@ -149,7 +149,8 @@ class Usage:
     """Physical bytes skipped because another counted path already owns that inode."""
     last_used: Optional[float] = None
 
-    def merge(self, other: "Usage") -> None:
+    def merge(self, other: "Usage", with_time: bool = True) -> None:
+        """Add another usage in. `with_time=False` adds the bytes but not the recency."""
         self.disk_bytes += other.disk_bytes
         self.physical_bytes += other.physical_bytes
         self.reclaim_bytes += other.reclaim_bytes
@@ -157,7 +158,8 @@ class Usage:
         self.dirs += other.dirs
         self.hardlinked_files += other.hardlinked_files
         self.shared_bytes += other.shared_bytes
-        self.touch(other.last_used)
+        if with_time:
+            self.touch(other.last_used)
 
     def touch(self, when: Optional[float]) -> None:
         if when is None:

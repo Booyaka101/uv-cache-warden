@@ -39,6 +39,13 @@ the tool.
 NAME_INDEXED = ("wheels", "sdists", "simple")
 """Buckets whose layout puts the package name in the path, so we can attribute their bytes."""
 
+METADATA_BUCKETS = frozenset({"simple"})
+"""Buckets whose timestamps say nothing about whether a package's bytes were used.
+
+`uv lock` revalidates the simple index for every package it resolves, so those entries are all
+freshly written even for a package nobody has installed in months.
+"""
+
 PROTECTED_PREFIXES = frozenset({"python", "osv"})
 """Managed interpreters and the vulnerability database. v1 never evicts these, by design."""
 
@@ -133,7 +140,9 @@ def load_layout(root: Path, source: str = "explicit") -> CacheLayout:
     if resolved.parent == resolved:
         raise DiscoveryError("Refusing to treat a filesystem root as a cache: {}".format(resolved))
     if resolved == Path(os.path.expanduser("~")).resolve():
-        raise DiscoveryError("Refusing to treat your home directory as a cache: {}".format(resolved))
+        raise DiscoveryError(
+            "Refusing to treat your home directory as a cache: {}".format(resolved)
+        )
 
     buckets: Dict[str, Path] = {}
     bucket_names: Dict[str, str] = {}
@@ -174,8 +183,3 @@ def load_layout(root: Path, source: str = "explicit") -> CacheLayout:
         bucket_names=bucket_names,
         unknown=unknown,
     )
-
-
-def open_cache(uv: Optional[Uv] = None, override: Optional[Path] = None) -> CacheLayout:
-    root, source = discover_cache_dir(uv=uv, override=override)
-    return load_layout(root, source=source)

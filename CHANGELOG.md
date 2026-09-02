@@ -10,13 +10,13 @@ First release.
 
 ### Added
 
-- `uvcw report` — per-package breakdown of the uv cache with sizes and last-access times,
+- `uvcw report`: per-package breakdown of the uv cache with sizes and last-access times,
   `--top N` and `--json`. Totals reconcile with `uv cache size --output-format machine`.
-- `uvcw gc --max-size SIZE` — least-recently-used eviction down to a byte budget, with
+- `uvcw gc --max-size SIZE`: least-recently-used eviction down to a byte budget, with
   `--min-age`, `--keep`, `--dry-run`, `--json` and `--fail-over`. Every deletion goes through
   `uv cache clean <package>` followed by a single `uv cache prune`; nothing is unlinked
   directly and `--force` is never passed to uv.
-- `uvcw doctor` — cache location and how it was found, uv version, bucket inventory with
+- `uvcw doctor`: cache location and how it was found, uv version, bucket inventory with
   sizes, reconciliation against `uv cache size`, hardlink statistics and whether access times
   are tracked on this filesystem.
 - `--json-file PATH` on every command, so a run can print a human summary and emit machine
@@ -37,5 +37,7 @@ First release.
   a regular file containing `archive-v<n>/<id>`.
 - Directory traversal stops at symlinks and at Windows junctions. `S_ISLNK` is false for a
   junction, so a walk that only checks for symlinks would follow one straight out of the cache.
+- A package's last-used time ignores the `simple-*` bucket. `uv lock` rewrites that metadata for
+  every package it resolves, which would otherwise make an entire lockfile look freshly used.
 
 [1.0.0]: https://github.com/Booyaka101/uv-cache-warden/releases/tag/v1.0.0
