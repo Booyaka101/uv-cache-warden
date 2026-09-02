@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python-version: "3.9" }
+          - { os: ubuntu-latest, python-version: "3.10" }
+          - { os: ubuntu-latest, python-version: "3.11" }
+          - { os: ubuntu-latest, python-version: "3.12" }
+          - { os: ubuntu-latest, python-version: "3.13" }
+          - { os: macos-latest, python-version: "3.11" }
+          - { os: macos-latest, python-version: "3.13" }
+          - { os: windows-latest, python-version: "3.9" }
+          - { os: windows-latest, python-version: "3.13" }
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: python -m pip install --disable-pip-version-check -e ".[dev]"
+
+      - name: Unit tests
+        run: python -m pytest -q
+
+      - name: Integration tests against a real uv
+        run: python -m pytest -q -m integration
+
+      - name: Acceptance checks on a real cache
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/uvcw-acceptance
+        run: |
+          set -euo pipefail
+          uv venv
+          uv pip install rich idna
+
+          uvcw doctor
+          uvcw report --json-file report.json
+          python -c "import json;d=json.load(open('report.json'));assert d['reconciliation_delta']<=0.02,d"
+
+          before=$(uv cache size --output-format machine 2>/dev/null)
+          budget=$((before / 2))
+
+          uvcw gc --max-size "${budget}" --dry-run
+          test "$(uv cache size --output-format machine 2>/dev/null)" = "${before}"
+
+          uvcw gc --max-size "${budget}" --fail-over
+          test "$(uv cache size --output-format machine 2>/dev/null)" -le "${budget}"
+
+  action:
+    name: composite action
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: false
+
+      - name: Warm the cache
+        run: |
+          uv venv
+          uv pip install rich idna
+
+      - name: Report
+        uses: ./
+        with:
+          mode: report
+          version: local
+
+      - name: Dry run
+        uses: ./
+        with:
+          mode: dry-run
+          max-size: 1MB
+          version: local
+
+      - name: Evict
+        id: evict
+        uses: ./
+        with:
+          max-size: 1MB
+          version: local
+
+      - name: Check outputs
+        run: |
+          echo "before=${{ steps.evict.outputs.size-before }} after=${{ steps.evict.outputs.size-after }}"
+          test "${{ steps.evict.outputs.size-after }}" -lt "${{ steps.evict.outputs.size-before }}"
+          test "${{ steps.evict.outputs.evicted }}" -gt 0
+
+  build:
+    name: build the distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --disable-pip-version-check build twine
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - name: Install the wheel into a clean environment
+        run: |
+          python -m venv /tmp/clean
+          /tmp/clean/bin/python -m pip install --disable-pip-version-check dist/*.whl
+          /tmp/clean/bin/uvcw --version
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/

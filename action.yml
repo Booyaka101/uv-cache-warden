@@ -1,0 +1,177 @@
+name: uv Cache Warden
+description: Keep the uv cache under a size budget by evicting least-recently-used packages through uv itself.
+author: Christo Bosch
+
+branding:
+  icon: hard-drive
+  color: purple
+
+inputs:
+  max-size:
+    description: Size budget, e.g. 10GB, 4GiB or a byte count. Required unless mode is report.
+    required: false
+    default: ""
+  min-age:
+    description: Never evict a package used more recently than this, e.g. 7d or 12h.
+    required: false
+    default: ""
+  keep:
+    description: Comma-separated package names to never evict.
+    required: false
+    default: ""
+  mode:
+    description: gc (evict down to the budget), dry-run (plan only, changes nothing) or report.
+    required: false
+    default: gc
+  fail-over:
+    description: Fail the step if the cache is still over budget afterwards.
+    required: false
+    default: "false"
+  cache-dir:
+    description: Cache directory to act on. Defaults to `uv cache dir`.
+    required: false
+    default: ""
+  timeout:
+    description: Seconds to wait for each uv subprocess while it holds the cache lock.
+    required: false
+    default: "900"
+  version:
+    description: >-
+      Version of uv-cache-warden to install. Empty installs the latest release; "local"
+      installs from this checkout, which is how the repository tests its own action.
+    required: false
+    default: "1.0.0"
+  summary:
+    description: Write a job summary.
+    required: false
+    default: "true"
+
+outputs:
+  size-before:
+    description: Cache size in bytes before the run.
+    value: ${{ steps.warden.outputs.size-before }}
+  size-after:
+    description: Cache size in bytes after the run.
+    value: ${{ steps.warden.outputs.size-after }}
+  reclaimed:
+    description: Bytes reclaimed.
+    value: ${{ steps.warden.outputs.reclaimed }}
+  evicted:
+    description: Number of packages evicted.
+    value: ${{ steps.warden.outputs.evicted }}
+  over-budget:
+    description: "\"true\" when the cache is still over budget."
+    value: ${{ steps.warden.outputs.over-budget }}
+  json-path:
+    description: Path to the full JSON result.
+    value: ${{ steps.warden.outputs.json-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv-cache-warden
+      shell: bash
+      env:
+        UVCW_INSTALL_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        case "${UVCW_INSTALL_VERSION}" in
+          "")      spec="uv-cache-warden" ;;
+          local)   spec="${GITHUB_ACTION_PATH}" ;;
+          *)       spec="uv-cache-warden==${UVCW_INSTALL_VERSION}" ;;
+        esac
+        if command -v uv >/dev/null 2>&1; then
+          uv tool install --quiet "${spec}"
+          # `uv tool install` does not put its bin directory on PATH for us.
+          bindir="$(uv tool dir --bin 2>/dev/null || true)"
+          echo "${bindir:-$HOME/.local/bin}" >> "${GITHUB_PATH}"
+        elif command -v pipx >/dev/null 2>&1; then
+          pipx install "${spec}"
+        else
+          py=python3
+          command -v python3 >/dev/null 2>&1 || py=python
+          "${py}" -m pip install --disable-pip-version-check --quiet "${spec}"
+        fi
+
+    - name: Run uv-cache-warden
+      id: warden
+      shell: bash
+      env:
+        UVCW_MODE: ${{ inputs.mode }}
+        UVCW_MAX_SIZE: ${{ inputs.max-size }}
+        UVCW_MIN_AGE: ${{ inputs.min-age }}
+        UVCW_KEEP: ${{ inputs.keep }}
+        UVCW_TIMEOUT: ${{ inputs.timeout }}
+        UVCW_FAIL_OVER: ${{ inputs.fail-over }}
+        UVCW_CACHE_DIR: ${{ inputs.cache-dir }}
+        UVCW_SUMMARY: ${{ inputs.summary }}
+      run: |
+        set -uo pipefail
+        # An empty UVCW_CACHE_DIR would otherwise override discovery with the empty string.
+        if [ -z "${UVCW_CACHE_DIR}" ]; then unset UVCW_CACHE_DIR; fi
+        result="${RUNNER_TEMP}/uvcw-result.json"
+
+        if [ "${UVCW_MODE}" = "report" ]; then
+          uvcw report --json-file "${result}"
+          status=$?
+        else
+          if [ -z "${UVCW_MAX_SIZE}" ]; then
+            echo "::error::max-size is required for mode '${UVCW_MODE}'"
+            exit 1
+          fi
+          args=()
+          case "${UVCW_MODE}" in
+            gc) ;;
+            dry-run) args+=(--dry-run) ;;
+            *) echo "::error::unknown mode '${UVCW_MODE}' (expected gc, dry-run or report)"; exit 1 ;;
+          esac
+          if [ "${UVCW_FAIL_OVER}" = "true" ]; then args+=(--fail-over); fi
+          uvcw gc --json-file "${result}" "${args[@]}"
+          status=$?
+        fi
+
+        if [ ! -s "${result}" ]; then
+          echo "::error::uvcw produced no result file; see the log above"
+          exit "${status}"
+        fi
+
+        py=python3
+        command -v python3 >/dev/null 2>&1 || py=python
+        "${py}" - "${result}" <<'PY'
+        import json, os, sys
+
+        with open(sys.argv[1]) as handle:
+            data = json.load(handle)
+
+        if "total" in data:
+            before = after = data["total"]["disk_bytes"]
+            reclaimed, evicted, over = 0, 0, False
+        else:
+            before = data["size_before_bytes"]
+            after = data["size_after_bytes"]
+            reclaimed = data["reclaimed_bytes"]
+            evicted = data["evicted_count"]
+            over = data["over_budget"]
+
+        with open(os.environ["GITHUB_OUTPUT"], "a") as handle:
+            handle.write("size-before={}\n".format(before))
+            handle.write("size-after={}\n".format(after))
+            handle.write("reclaimed={}\n".format(reclaimed))
+            handle.write("evicted={}\n".format(evicted))
+            handle.write("over-budget={}\n".format("true" if over else "false"))
+            handle.write("json-path={}\n".format(sys.argv[1]))
+
+        if os.environ.get("UVCW_SUMMARY") == "true" and os.environ.get("GITHUB_STEP_SUMMARY"):
+            def gib(value):
+                return "{:.2f} GiB".format(value / 2 ** 30)
+            with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as handle:
+                handle.write("### uv cache warden\n\n")
+                handle.write("| | |\n|---|---|\n")
+                handle.write("| cache before | {} |\n".format(gib(before)))
+                handle.write("| cache after | {} |\n".format(gib(after)))
+                handle.write("| reclaimed | {} |\n".format(gib(reclaimed)))
+                handle.write("| packages evicted | {} |\n".format(evicted))
+                handle.write("| over budget | {} |\n".format(over))
+        PY
+
+        exit $status
