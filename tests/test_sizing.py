@@ -88,7 +88,8 @@ def test_dedupe_is_global_across_subtrees(tmp_path):
         counter.add(second, st, is_dir)
 
     assert first.physical_bytes >= 32_000
-    assert second.physical_bytes == 0
+    # The second walk still counts its own directory entry, but not the file's bytes again.
+    assert second.physical_bytes < 32_000
     assert second.shared_bytes >= 32_000
 
 
@@ -136,3 +137,11 @@ def test_atime_looks_frozen_needs_a_sample(tmp_path):
     assert counter.atime_looks_frozen is True
     counter.atime_equal_mtime = 50
     assert counter.atime_looks_frozen is False
+
+
+def test_directory_atime_does_not_count_as_use(tmp_path):
+    """Listing a directory bumps its atime under relatime; that is our visit, not the user's."""
+    write_file(tmp_path / "pkg" / "f", 10, mtime=1_000_000)
+    os.utime(str(tmp_path / "pkg"), (2_000_000_000, 1_000_000))
+    usage = measure_tree(tmp_path / "pkg")
+    assert usage.last_used == 1_000_000

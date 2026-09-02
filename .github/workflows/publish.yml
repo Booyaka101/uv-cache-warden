@@ -51,5 +51,11 @@ jobs:
           name: dist
           path: dist/
 
-      - name: Publish with Trusted Publishing
+      # Uses the PYPI_API_TOKEN secret. To move to Trusted Publishing, register this workflow
+      # and the `pypi` environment on pypi.org, then drop the `password` line; the id-token
+      # permission above is already in place for it.
+      - name: Publish
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true

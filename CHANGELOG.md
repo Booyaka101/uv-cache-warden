@@ -51,6 +51,10 @@ First release.
 - The cache root's own directory entry is counted. `uv cache size` counts the path it is given,
   and on NTFS a directory reports zero until it outgrows its resident index, so omitting it was
   invisible on a small cache and 8 KiB short on a larger one.
+- Recency comes from regular files only; directories and symlinks contribute their mtime. On a
+  `relatime` mount (the Linux default) listing a directory or reading a symlink bumps its atime,
+  and the scan does both to every entry, so the tool was marking every package as used by its
+  own visit. Found by running the suite on ext4 under WSL before the first CI run finished.
 - A dry run that cannot reach the budget says so, and says which rule held the bytes back. It
   previously printed the projection and stopped, which read as success even while `--fail-over`
   was exiting 2.

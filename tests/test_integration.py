@@ -34,6 +34,8 @@ def _run(argv, cwd, env):
     import os
 
     merged = dict(os.environ)
+    # An activated venv would make `uv pip install` target it instead of the fresh one.
+    merged.pop("VIRTUAL_ENV", None)
     merged.update(env)
     proc = subprocess.run(argv, cwd=str(cwd), env=merged, capture_output=True, text=True)
     if proc.returncode != 0:

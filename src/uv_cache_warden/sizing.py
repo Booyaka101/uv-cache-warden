@@ -186,11 +186,14 @@ class Counter:
             usage.dirs += 1
             usage.disk_bytes += unit
             usage.physical_bytes += unit
-            usage.touch(last_used_of(st))
+            usage.touch(st.st_mtime)
             return
 
         usage.files += 1
-        usage.touch(last_used_of(st))
+        # Only a regular file's atime means a user read it. Listing a directory or reading a
+        # symlink bumps its atime under relatime, and this scan does both to every entry, so for
+        # anything else the atime would record our own visit.
+        usage.touch(last_used_of(st) if stat.S_ISREG(st.st_mode) else st.st_mtime)
         self.atime_samples += 1
         if int(st.st_atime) == int(st.st_mtime):
             self.atime_equal_mtime += 1
