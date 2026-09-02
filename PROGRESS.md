@@ -1,6 +1,6 @@
 # PROGRESS
 
-**Status: v1.0.1 published on PyPI and released on GitHub. Two owner clicks remain: the Marketplace sudo confirmation and the #5731 post.**
+**Status: v1.0.1 on PyPI, released on GitHub, listed on the Marketplace. One owner step remains: posting the #5731 comment.**
 
 Last updated 2026-09-02.
 
@@ -46,7 +46,7 @@ not mocked up.
 | PyPI | `uv-cache-warden` 1.0.0 and 1.0.1, wheel + sdist, uploaded by `publish.yml` using the `PYPI_API_TOKEN` repo secret |
 | `uvx uv-cache-warden report` from PyPI | works on 1.0.1 (failed on 1.0.0, see below) |
 | GitHub releases | v1.0.0 and v1.0.1 (latest), floating `v1` tag on the 1.0.1 commit |
-| Marketplace listing | **blocked on a sudo prompt**, see below |
+| Marketplace listing | live at https://github.com/marketplace/actions/uv-cache-warden, Continuous integration / Dependency management, v1.0.1 |
 | astral-sh/uv#5731 comment | **drafted, not posted**, see below |
 
 1.0.0 went out first and turned out not to satisfy the brief's own acceptance line: `uvx
@@ -54,34 +54,28 @@ uv-cache-warden report` failed with "an executable named `uv-cache-warden` is no
 because uvx runs the executable named after the package and only `uvcw` was installed. 1.0.1
 adds the second entry point. PyPI versions are immutable, so both exist; 1.0.1 is latest.
 
-## Two things that need the owner
+## One thing that needs the owner
 
-1. **Marketplace listing.** The release edit form for v1.0.1 was filled in through the signed-in
-   Chrome session (checkbox ticked, primary category Continuous integration, secondary
-   Dependency management) and submitted. GitHub answered with its **Confirm access** sudo prompt
-   asking for a 2FA app code. That tab is still open on the prompt. Enter the code and press
-   Verify; GitHub replays the pending submit and the release lands listed, no re-tick needed
-   (LESSONS.md 2026-08-23 records the same flow). I did not read a code out of the mailbox.
-2. **Post to #5731.** Draft below, in the register of that thread. Post it as is, or edit; it is
-   your name on it. It discloses the AI help in one line at the end.
+**Post to #5731.** Draft below, in the register of the README. Your name goes on it, so edit
+or post as is. It discloses the AI help in the last line.
 
 ### Draft comment for astral-sh/uv#5731
 
-> For anyone who needs this before #20116 lands: I wrote a small tool that does the size-cap-plus-LRU thing externally, using only `uv cache clean <pkg>` and `uv cache prune` so it never touches the cache directly.
+> For anyone who needs a cap before #20116 lands: [uv-cache-warden](https://github.com/Booyaka101/uv-cache-warden) puts a size budget on the cache from outside. Every deletion is `uv cache clean <pkg>` or one `uv cache prune`, so it never touches the cache directly and never passes `--force`.
 >
 > ```
-> uvx uv-cache-warden report          # per-package sizes, share of cache, last used
+> uvx uv-cache-warden report                                  # per-package size, share, last used
 > uvx uv-cache-warden gc --max-size 10GB --min-age 7d --dry-run
-> uvx uv-cache-warden gc --min-free 50GB
+> uvx uv-cache-warden gc --min-free 50GB                      # budget against the disk instead
 > ```
 >
-> It works out which package each `archive-v0/<hash>` belongs to by resolving the links from `wheels-v6` (symlinks on Unix, the little `archive-v0/<id>` pointer files on Windows), evicts oldest-first until the projected total is under budget, then prunes once and re-measures with `uv cache size`. The totals reconcile byte for byte with `uv cache size` because it reproduces what diskus does, including the NTFS directory index sizes that took me a while to find.
+> It maps each `archive-v0/<hash>` back to a package by resolving the links from `wheels-v6` (symlinks on Unix, the small `archive-v0/<id>` pointer files on Windows), evicts oldest first until the projected total is under budget, prunes once, then re-measures with `uv cache size`. The totals agree with `uv cache size` byte for byte because it does what diskus does, NTFS directory index sizes included.
 >
-> Two things worth knowing if you write your own version of this. On Windows NTFS last-access updates are off by default, and on a relatime Linux mount just listing the cache bumps directory and symlink atimes, so "last used" has to come from regular files only or your own scan marks everything as fresh. And `uv cache clean <pkg>` won't free an archive that another package still links to, so a shared archive has to be charged to neither.
+> Two things that bit while building it, in case anyone rolls their own. On a relatime Linux mount, listing a directory or reading a symlink bumps its atime, so a scan that takes "last used" from every entry marks the whole cache as fresh on its own visit; it has to come from regular files only. And `uv cache clean <pkg>` cannot free an archive another package still links to, so a shared archive belongs to neither.
 >
-> It's stdlib only, there's a composite action for runners that keep their cache between jobs, and the CI runs the same acceptance checks on Linux, macOS and Windows. https://github.com/Booyaka101/uv-cache-warden
+> Stdlib only, Python 3.9+, and there is a composite action for runners that keep a cache between jobs. CI runs the same acceptance checks on Linux, macOS and Windows.
 >
-> Happy to retire it the day autoprune ships. Written with a fair amount of help from Claude; the reconciliation and atime findings above are all from running it against real caches.
+> Happy to retire it the day autoprune ships. Built with a good deal of help from Claude; the numbers above are from running it against real caches.
 
 Two upstream facts that bear on the comment: PR astral-sh/uv#20116 (autoprune behind a preview
 flag) is still open as of today, and `uv 0.12.9` has no size or age flag on any cache command.
