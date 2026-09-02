@@ -46,7 +46,7 @@ inputs:
       Version of uv-cache-warden to install. Empty installs the latest release; "local"
       installs from this checkout, which is how the repository tests its own action.
     required: false
-    default: "1.0.2"
+    default: "1.0.3"
   summary:
     description: Write a job summary.
     required: false

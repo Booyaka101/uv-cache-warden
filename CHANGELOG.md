@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2026-09-02
+
+### Changed
+
+- Documentation only, no code change. The README's examples and screenshots were captured on a
+  Windows scratch directory, so every path in them read like a test rig. They are now taken on
+  Linux at the documented default cache location, which is where most of the reports in
+  astral-sh/uv#5731 come from, and they show the `st_blocks*512` sizing and `relatime`
+  access-time branches rather than the NTFS ones.
+
 ## [1.0.2] - 2026-09-02
 
 ### Changed
@@ -78,6 +88,7 @@ First release.
   previously printed the projection and stopped, which read as success even while `--fail-over`
   was exiting 2.
 
+[1.0.3]: https://github.com/Booyaka101/uv-cache-warden/releases/tag/v1.0.3
 [1.0.2]: https://github.com/Booyaka101/uv-cache-warden/releases/tag/v1.0.2
 [1.0.1]: https://github.com/Booyaka101/uv-cache-warden/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Booyaka101/uv-cache-warden/releases/tag/v1.0.0
