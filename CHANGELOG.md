@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-09-02
+
+### Fixed
+
+- `uvx uv-cache-warden` now works. uvx runs the executable named after the package, and 1.0.0
+  only shipped `uvcw`, so the one-line install in the README failed with "an executable named
+  `uv-cache-warden` is not provided". Both names now resolve to the same entry point.
+- The publish workflow only runs for release tags (`v1.2.3`), so pushing the floating `v1` tag
+  the Action is used through no longer produces a failed run.
+
 ## [1.0.0] - 2026-09-02
 
 First release.
@@ -59,4 +69,5 @@ First release.
   previously printed the projection and stopped, which read as success even while `--fail-over`
   was exiting 2.
 
+[1.0.1]: https://github.com/Booyaka101/uv-cache-warden/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Booyaka101/uv-cache-warden/releases/tag/v1.0.0

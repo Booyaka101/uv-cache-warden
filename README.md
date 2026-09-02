@@ -17,7 +17,7 @@ uv's docs say it is [never safe to modify the cache directly](https://docs.astra
 ```console
 $ uv tool install uv-cache-warden
 $ uvcw --version
-uvcw 1.0.0
+uvcw 1.0.1
 ```
 
 Or run it without installing:
@@ -146,7 +146,7 @@ Give both and the tighter one wins; the header always names which constraint is 
 
 ```console
 $ uvcw doctor
-[ ok ] uv-cache-warden  1.0.0 on Python 3.12.10 (Windows-11-10.0.26200-SP0)
+[ ok ] uv-cache-warden  1.0.1 on Python 3.12.10 (Windows-11-10.0.26200-SP0)
 [ ok ] uv               uv 0.12.9 (9f9286029 2026-09-01 x86_64-pc-windows-msvc) at
                         D:\tmp\uvcw-venv\Scripts\uv.EXE
 [ ok ] cache directory  D:\tmp\uvcw-live (from uv cache dir)

@@ -2,7 +2,9 @@ name: Publish
 
 on:
   push:
-    tags: ["v*"]
+    # Release tags only. The floating `v1` tag that the Action is used through must never
+    # reach PyPI, and would fail the version check below anyway.
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
   workflow_dispatch:
 
 permissions:

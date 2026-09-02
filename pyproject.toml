@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "uv-cache-warden"
-version = "1.0.0"
+version = "1.0.1"
 description = "Enforce a size budget on Astral uv's package cache, with LRU eviction through uv itself."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -40,6 +40,8 @@ Changelog = "https://github.com/Booyaka101/uv-cache-warden/blob/main/CHANGELOG.m
 
 [project.scripts]
 uvcw = "uv_cache_warden.cli:main"
+# `uvx uv-cache-warden` looks for an executable named after the package.
+uv-cache-warden = "uv_cache_warden.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
