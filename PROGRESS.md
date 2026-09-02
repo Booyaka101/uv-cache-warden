@@ -54,19 +54,14 @@ uv-cache-warden report` failed with "an executable named `uv-cache-warden` is no
 because uvx runs the executable named after the package and only `uvcw` was installed. 1.0.1
 adds the second entry point. PyPI versions are immutable, so both exist; 1.0.1 is latest.
 
-## Distribution
+## Notes
 
-Discovery is passive by choice. The package is on PyPI under the name people would search for,
-the Action is listed on the Marketplace under Continuous integration and Dependency management,
-and the README's opening paragraph carries the phrases someone types into GitHub search when
-their disk fills up.
+Discovery is passive by choice: the PyPI name, the Marketplace listing, and the README's opening
+paragraph. A comment on astral-sh/uv#5731 was drafted and deliberately not posted; it is Astral's
+tracker and a third-party link there can read as a plug however carefully it is worded. The draft
+is in git history at commit cd95a4b if that is ever revisited.
 
-A comment on astral-sh/uv#5731 was drafted and then deliberately not posted. It is Astral's
-tracker, and a third-party tool link on a maintainer-owned issue can read as a plug however
-carefully it is worded. That judgement is not worth revisiting on a whim; if it ever is, the
-draft is in git history at commit cd95a4b.
-
-To move the publish workflow to Trusted Publishing later: on pypi.org add a publisher for
+To move the publish workflow to Trusted Publishing: on pypi.org add a publisher for
 `Booyaka101/uv-cache-warden`, workflow `publish.yml`, environment `pypi`, then delete the
 `password:` line in `.github/workflows/publish.yml` and the repo secret.
 

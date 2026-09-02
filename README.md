@@ -263,10 +263,6 @@ The unit tests build synthetic cache trees matching `crates/uv-cache/src/lib.rs`
 
 `PHASE0.md` records every upstream fact this tool relies on, with the quote and the URL, so it can be rechecked when uv changes.
 
-## Distribution
-
-The first place to post this is [astral-sh/uv#5731](https://github.com/astral-sh/uv/issues/5731) itself. It is an open, `help wanted` issue with 31 comments of people describing exactly this workaround by hand, and a comment there reaches everyone already subscribed to the problem.
-
 ## License
 
 MIT.
