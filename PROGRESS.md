@@ -1,6 +1,6 @@
 # PROGRESS
 
-**Status: v1.0.1 on PyPI, released on GitHub, listed on the Marketplace. One owner step remains: posting the #5731 comment.**
+**Status: v1.0.1 shipped. On PyPI, released on GitHub, listed on the Marketplace. Nothing outstanding.**
 
 Last updated 2026-09-02.
 
@@ -47,42 +47,24 @@ not mocked up.
 | `uvx uv-cache-warden report` from PyPI | works on 1.0.1 (failed on 1.0.0, see below) |
 | GitHub releases | v1.0.0 and v1.0.1 (latest), floating `v1` tag on the 1.0.1 commit |
 | Marketplace listing | live at https://github.com/marketplace/actions/uv-cache-warden, Continuous integration / Dependency management, v1.0.1 |
-| astral-sh/uv#5731 comment | **drafted, not posted**, see below |
+| astral-sh/uv#5731 comment | drafted, then decided against, see below |
 
 1.0.0 went out first and turned out not to satisfy the brief's own acceptance line: `uvx
 uv-cache-warden report` failed with "an executable named `uv-cache-warden` is not provided",
 because uvx runs the executable named after the package and only `uvcw` was installed. 1.0.1
 adds the second entry point. PyPI versions are immutable, so both exist; 1.0.1 is latest.
 
-## One thing that needs the owner
+## Distribution
 
-**Post to #5731.** Draft below, in the register of the README. Your name goes on it, so edit
-or post as is. It discloses the AI help in the last line.
+Discovery is passive by choice. The package is on PyPI under the name people would search for,
+the Action is listed on the Marketplace under Continuous integration and Dependency management,
+and the README's opening paragraph carries the phrases someone types into GitHub search when
+their disk fills up.
 
-### Draft comment for astral-sh/uv#5731
-
-> For anyone who needs an actual cap: [uv-cache-warden](https://github.com/Booyaka101/uv-cache-warden) puts a size budget on the cache from outside. Every deletion is `uv cache clean <pkg>` or one `uv cache prune`, so it never touches the cache directly and never passes `--force`.
->
-> ```
-> uvx uv-cache-warden report                                  # per-package size, share, last used
-> uvx uv-cache-warden gc --max-size 10GB --min-age 7d --dry-run
-> uvx uv-cache-warden gc --min-free 50GB                      # budget against the disk instead
-> ```
->
-> It maps each `archive-v0/<hash>` back to a package by resolving the links from `wheels-v6` (symlinks on Unix, the small `archive-v0/<id>` pointer files on Windows), evicts oldest first until the projected total is under budget, prunes once, then re-measures with `uv cache size`. The totals agree with `uv cache size` byte for byte because it does what diskus does, NTFS directory index sizes included.
->
-> Two things that bit while building it, in case anyone rolls their own. On a relatime Linux mount, listing a directory or reading a symlink bumps its atime, so a scan that takes "last used" from every entry marks the whole cache as fresh on its own visit; it has to come from regular files only. And `uv cache clean <pkg>` cannot free an archive another package still links to, so a shared archive belongs to neither.
->
-> Stdlib only, Python 3.9+, and there is a composite action for runners that keep a cache between jobs. CI runs the same acceptance checks on Linux, macOS and Windows.
->
-> Worth being clear about the overlap with #20116: that PR makes `uv cache prune` run itself, which is the right fix for the long-lived MCP server case, but it still only removes unreferenced archives. Old versions kept by weekly upgrades and the CUDA wheels in #16551 are referenced, so prune leaves them and so will autoprune. A size budget over referenced packages is the part that stays external, and it is the part this does.
->
-> Built with a good deal of help from Claude; the numbers above are from running it against real caches.
-
-Two upstream facts that bear on the comment: PR astral-sh/uv#20116 is still open as of today and,
-read in full, adds automatic *pruning of unreferenced archives* behind a preview flag; it adds no
-size, age or LRU logic (the diff never mentions size). `uv 0.12.9` has no size or age flag on any
-cache command. The comment says so rather than promising to retire when it lands.
+A comment on astral-sh/uv#5731 was drafted and then deliberately not posted. It is Astral's
+tracker, and a third-party tool link on a maintainer-owned issue can read as a plug however
+carefully it is worded. That judgement is not worth revisiting on a whim; if it ever is, the
+draft is in git history at commit cd95a4b.
 
 To move the publish workflow to Trusted Publishing later: on pypi.org add a publisher for
 `Booyaka101/uv-cache-warden`, workflow `publish.yml`, environment `pypi`, then delete the
