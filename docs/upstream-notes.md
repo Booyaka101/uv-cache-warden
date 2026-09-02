@@ -1,7 +1,11 @@
-# Phase 0, resource verification
+# Upstream notes
 
-Every claim the brief depends on was fetched and checked before any code was written.
-Verified 2026-09-02 against `uv 0.12.9 (9f9286029 2026-09-01 x86_64-pc-windows-msvc)`.
+uv-cache-warden reproduces several pieces of uv's internal behaviour exactly: how it names cache
+buckets, how it links unpacked wheels, and how `uv cache size` counts bytes. None of that is
+public API, so this file records where each fact came from, verbatim, with a link. When uv
+changes and the numbers stop agreeing, start here.
+
+Checked 2026-09-02 against `uv 0.12.9 (9f9286029 2026-09-01 x86_64-pc-windows-msvc)`.
 
 ## 1. `uv` has no size or age flag, https://docs.astral.sh/uv/reference/cli/
 
@@ -78,7 +82,7 @@ Prune, line 809: `// Fourth, remove any unused archives (by searching for archiv
 
 ## 4. The archive link is NOT a symlink on Windows
 
-This is the one place the brief's model was incomplete, and the source settles it
+This is the detail most external tools get wrong, and the source settles it
 (crates/uv-cache/src/lib.rs, `create_link` / `resolve_link`):
 
 ```rust
@@ -121,8 +125,8 @@ count, enabled by the `cache-physical-space` preview feature.
 
 ## 6. What `uv cache size` actually measures
 
-The brief asked us to reconcile against `uv cache size`; the number only reconciles if you know
-how it is produced. `crates/uv/src/commands/cache_size.rs` delegates to `diskus 0.9.0`:
+Our totals reconcile with `uv cache size` byte for byte, which is only possible once you know
+how that number is produced. `crates/uv/src/commands/cache_size.rs` delegates to `diskus 0.9.0`:
 
 ```rust
 let disk_usage = DiskUsage::new(vec![cache.root().to_path_buf()]);
@@ -142,8 +146,8 @@ of `uv cache size` on a 7 MiB cache, because NTFS reports a directory's index al
 7,344,134 bytes.
 
 `sizing.py` reproduces this exactly as `disk_bytes`, which is the metric `uvcw gc` budgets
-against. It separately reports `physical_bytes` (inode dedupe on *both* platforms, the brief's
-mandatory rule) and `reclaim_bytes` (uv's own `file_size` above).
+against. It separately reports `physical_bytes` (inode dedupe on *both* platforms) and
+`reclaim_bytes` (uv's own `file_size` above).
 
 ## 7. Safety contract, https://docs.astral.sh/uv/concepts/cache/
 
@@ -188,15 +192,3 @@ opened 2025-11-02. Body:
 > hardware. Once done with it, I uninstalled the tool. However there seems to be no way to get
 > rid of the nvidia stuff from the cache with `uv cache prune`. The detection logic says that
 > there is nothing "unused".
-
-## 10. Cost model
-
-Zero cost. `uv` is free and was installed here from PyPI into a scratch venv. PyPI publishing and
-GitHub Actions are free. No account was created and no payment details exist anywhere in this
-build. `pypi.org/pypi/uv-cache-warden/json` returns **404**, so the name is available.
-
-## 11. LESSONS.md
-
-`C:\Users\cbosc\claude-phone\ideas\LESSONS.md` read. Nothing in it contradicts this brief. The
-relevant entry is 2026-08-11: this PC's bare `python` is 3.11.9, so anything needing a newer
-interpreter runs through `py -3.12`. Applied, the dev venv is 3.12.

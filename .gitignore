@@ -12,3 +12,7 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 .DS_Store
+
+# Local build notes, not for the public repo
+PROGRESS.md
+PHASE0.md

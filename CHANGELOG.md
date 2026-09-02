@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-09-02
+
+### Changed
+
+- Documentation only, no code change. Dropped a "Distribution" section from the README that was
+  build-planning notes rather than anything a user of the tool needs, and replaced `PHASE0.md`
+  with [`docs/upstream-notes.md`](docs/upstream-notes.md), which keeps the verbatim uv sources
+  the byte accounting depends on and drops the surrounding project chatter.
+
 ## [1.0.1] - 2026-09-02
 
 ### Fixed
@@ -69,5 +78,6 @@ First release.
   previously printed the projection and stopped, which read as success even while `--fail-over`
   was exiting 2.
 
+[1.0.2]: https://github.com/Booyaka101/uv-cache-warden/releases/tag/v1.0.2
 [1.0.1]: https://github.com/Booyaka101/uv-cache-warden/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Booyaka101/uv-cache-warden/releases/tag/v1.0.0

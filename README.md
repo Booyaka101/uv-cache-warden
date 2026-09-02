@@ -19,7 +19,7 @@ uv's docs say it is [never safe to modify the cache directly](https://docs.astra
 ```console
 $ uv tool install uv-cache-warden
 $ uvcw --version
-uvcw 1.0.1
+uvcw 1.0.2
 ```
 
 Or run it without installing:
@@ -148,7 +148,7 @@ Give both and the tighter one wins; the header always names which constraint is 
 
 ```console
 $ uvcw doctor
-[ ok ] uv-cache-warden  1.0.1 on Python 3.12.10 (Windows-11-10.0.26200-SP0)
+[ ok ] uv-cache-warden  1.0.2 on Python 3.12.10 (Windows-11-10.0.26200-SP0)
 [ ok ] uv               uv 0.12.9 (9f9286029 2026-09-01 x86_64-pc-windows-msvc) at
                         D:\tmp\uvcw-venv\Scripts\uv.EXE
 [ ok ] cache directory  D:\tmp\uvcw-live (from uv cache dir)
@@ -261,7 +261,7 @@ $ python -m pytest -q -m integration  # needs uv on PATH and PyPI access
 
 The unit tests build synthetic cache trees matching `crates/uv-cache/src/lib.rs` and use a recording fake in place of the uv wrapper. The fake lives in `tests/conftest.py` and nothing under `src/` imports it.
 
-`PHASE0.md` records every upstream fact this tool relies on, with the quote and the URL, so it can be rechecked when uv changes.
+[`docs/upstream-notes.md`](docs/upstream-notes.md) records every uv internal this tool depends on, with the verbatim source and a link, so it can be rechecked when uv changes.
 
 ## License
 

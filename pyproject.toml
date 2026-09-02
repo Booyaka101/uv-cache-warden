@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "uv-cache-warden"
-version = "1.0.1"
+version = "1.0.2"
 description = "Enforce a size budget on Astral uv's package cache, with LRU eviction through uv itself."
 readme = "README.md"
 license = { file = "LICENSE" }
