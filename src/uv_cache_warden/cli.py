@@ -14,6 +14,7 @@ from typing import List, Optional, Sequence, Tuple
 from . import __version__, doctor, gc as gc_mod, report as report_mod
 from .discovery import CacheLayout, DiscoveryError, discover_cache_dir, load_layout
 from .sizing import parse_duration, parse_size
+from .style import Progress, Style
 from .uvcmd import DEFAULT_TIMEOUT, Uv, UvError, UvNotFound
 
 EXIT_OK = 0
@@ -30,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Every deletion is performed by uv itself (`uv cache clean`, `uv cache prune`); "
             "uvcw never unlinks a cache file. Defaults can also be set through UVCW_CACHE_DIR, "
-            "UVCW_UV, UVCW_TIMEOUT, UVCW_MAX_SIZE, UVCW_MIN_AGE and UVCW_KEEP."
+            "UVCW_UV, UVCW_TIMEOUT, UVCW_MAX_SIZE, UVCW_MIN_FREE, UVCW_MIN_AGE and UVCW_KEEP."
         ),
     )
     parser.add_argument("--version", action="version", version="{} {}".format(PROG, __version__))
@@ -42,7 +43,14 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(report_parser)
     report_parser.add_argument("--json", action="store_true", help="Emit JSON instead of a table.")
     report_parser.add_argument(
-        "--top", type=_positive_int, metavar="N", help="Show only the first N packages."
+        "--top",
+        type=_positive_int,
+        metavar="N",
+        help="Show only the first N packages. Defaults to {} on a terminal so the header stays "
+        "on screen; piped output is never truncated.".format(report_mod.DEFAULT_TOP),
+    )
+    report_parser.add_argument(
+        "--all", action="store_true", help="Show every package, however long the table."
     )
     report_parser.add_argument(
         "--sort",
@@ -61,6 +69,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-size",
         metavar="SIZE",
         help="Budget, e.g. 10GB, 4GiB or a byte count. Required (or set UVCW_MAX_SIZE).",
+    )
+    gc_parser.add_argument(
+        "--min-free",
+        metavar="SIZE",
+        help="Evict until at least this much space is free on the cache's filesystem, e.g. 20GB. "
+        "Combined with --max-size, the tighter constraint wins.",
     )
     gc_parser.add_argument(
         "--min-age",
@@ -104,6 +118,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--no-color", action="store_true", help="Never colourise output. NO_COLOR does the same."
+    )
     parser.add_argument(
         "--cache-dir",
         metavar="PATH",
@@ -188,6 +205,17 @@ def _open(args: argparse.Namespace, echo: bool = True) -> Tuple[Uv, CacheLayout]
     return uv, layout
 
 
+def _style(args: argparse.Namespace) -> Style:
+    """Colour is for humans reading a terminal, never for JSON or a redirected log."""
+    if getattr(args, "no_color", False) or getattr(args, "json", False):
+        return Style(enabled=False)
+    return Style.detect(sys.stdout)
+
+
+def _progress(args: argparse.Namespace) -> Progress:
+    return Progress(enabled=not getattr(args, "json", False))
+
+
 def _emit(args: argparse.Namespace, payload: dict, text: str) -> None:
     """Write the result once, in whichever forms were asked for."""
     sys.stdout.write((json.dumps(payload, indent=2) if args.json else text) + "\n")
@@ -196,23 +224,43 @@ def _emit(args: argparse.Namespace, payload: dict, text: str) -> None:
             handle.write(json.dumps(payload, indent=2) + "\n")
 
 
+def _row_limit(args: argparse.Namespace) -> Optional[int]:
+    if args.all or args.json:
+        return None
+    if args.top is not None:
+        return args.top
+    return report_mod.DEFAULT_TOP if sys.stdout.isatty() else None
+
+
 def _cmd_report(args: argparse.Namespace) -> int:
+    style = _style(args)
     uv, layout = _open(args, echo=not args.json)
-    result = report_mod.scan(layout, uv)
+    progress = _progress(args)
+    try:
+        result = report_mod.scan(layout, uv, progress=progress)
+    finally:
+        progress.done()
+    top = _row_limit(args)
     _emit(
         args,
-        report_mod.to_json(result, top=args.top, sort=args.sort),
-        report_mod.render(result, top=args.top, sort=args.sort),
+        report_mod.to_json(result, top=None if args.all else args.top, sort=args.sort),
+        report_mod.render(result, top=top, sort=args.sort, style=style),
     )
     return EXIT_OK
 
 
 def _cmd_gc(args: argparse.Namespace) -> int:
+    style = _style(args)
     raw_size = args.max_size or os.environ.get("UVCW_MAX_SIZE")
-    if not raw_size:
-        return _fail("--max-size is required (or set UVCW_MAX_SIZE), e.g. --max-size 10GB")
+    raw_free = args.min_free or os.environ.get("UVCW_MIN_FREE")
+    if not raw_size and not raw_free:
+        return _fail(
+            "give a budget: --max-size 10GB, --min-free 20GB, or both "
+            "(UVCW_MAX_SIZE / UVCW_MIN_FREE also work)"
+        )
     try:
-        budget = parse_size(raw_size)
+        max_size = parse_size(raw_size) if raw_size else None
+        min_free = parse_size(raw_free) if raw_free else None
     except ValueError as exc:
         return _fail(str(exc))
 
@@ -228,16 +276,32 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     keep.extend(_split_env(os.environ.get("UVCW_KEEP")))
 
     uv, layout = _open(args, echo=not args.json)
-    result = gc_mod.run(
-        layout,
-        uv,
-        budget=budget,
-        min_age=min_age,
-        keep=keep,
-        dry_run=args.dry_run,
-        prune=args.prune,
-    )
-    _emit(args, gc_mod.to_json(result), gc_mod.render(result))
+    try:
+        current = uv.cache_size()
+    except UvError:
+        current = None
+    if current is None:
+        from .sizing import measure_tree
+
+        current = measure_tree(layout.root).disk_bytes
+    budget, bound_by = gc_mod.budget_for(current, layout.root, max_size, min_free)
+
+    progress = _progress(args)
+    try:
+        result = gc_mod.run(
+            layout,
+            uv,
+            budget=budget,
+            min_age=min_age,
+            keep=keep,
+            dry_run=args.dry_run,
+            prune=args.prune,
+            progress=progress,
+            bound_by=bound_by,
+        )
+    finally:
+        progress.done()
+    _emit(args, gc_mod.to_json(result), gc_mod.render(result, style=style))
 
     if args.fail_over and result.over_budget:
         return EXIT_OVER_BUDGET
@@ -245,9 +309,14 @@ def _cmd_gc(args: argparse.Namespace) -> int:
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
+    style = _style(args)
     override = Path(args.cache_dir) if args.cache_dir else None
-    diagnosis = doctor.diagnose(cache_dir=override, uv_path=args.uv)
-    _emit(args, diagnosis.as_json(), doctor.render(diagnosis))
+    progress = _progress(args)
+    try:
+        diagnosis = doctor.diagnose(cache_dir=override, uv_path=args.uv, progress=progress)
+    finally:
+        progress.done()
+    _emit(args, diagnosis.as_json(), doctor.render(diagnosis, style=style))
     return EXIT_ERROR if diagnosis.failed else EXIT_OK
 
 

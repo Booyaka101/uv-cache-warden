@@ -37,8 +37,9 @@ def test_protected_buckets_are_never_a_package(cache):
 
     assert result.packages == {}
     assert result.protected.disk_bytes >= 905_000
-    # Only CACHEDIR.TAG and the empty bucket directories are left over.
-    assert result.unattributed.disk_bytes < 1_000
+    # The only unattributed file is CACHEDIR.TAG; the rest is directory entries, cache root
+    # included, which is what `uv cache size` counts them as too.
+    assert result.unattributed.files == 1
 
 
 def test_shared_archive_is_unattributed(cache):
@@ -116,3 +117,29 @@ def test_simple_index_metadata_does_not_reset_the_clock(cache):
 
     assert result.age_of(result.packages["cold"]) > 100 * HOUR
     assert result.packages["cold"].usage.disk_bytes >= 50_000
+
+
+def test_scan_total_matches_a_plain_measurement(cache):
+    """The classified pass and the flat pass must agree, or reconciliation drifts silently.
+
+    They diverged once: `scan` walked only the entries *under* the cache root and never counted
+    the root directory itself, which `uv cache size` does. On NTFS that is zero until the
+    directory outgrows its resident index, so it stayed invisible on small caches.
+    """
+    from uv_cache_warden.sizing import measure_tree
+
+    cache.add_package("rich", size=30_000)
+    cache.add_package("torch", size=90_000)
+    result = report.scan(cache.layout())
+
+    assert result.total.disk_bytes == measure_tree(cache.root).disk_bytes
+    assert result.total.dirs == measure_tree(cache.root).dirs
+
+
+def test_the_cache_root_itself_is_counted(cache):
+    cache.add_package("rich")
+    result = report.scan(cache.layout())
+    walked = list(report.walk(cache.root))
+
+    assert walked[0][1] == ()
+    assert result.buckets[report.ROOT_BUCKET].dirs >= 1

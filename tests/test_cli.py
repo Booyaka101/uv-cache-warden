@@ -44,7 +44,7 @@ def test_missing_cache_dir_is_a_clear_message(tmp_path, capsys, monkeypatch):
 
 def test_gc_requires_a_budget(capsys):
     assert cli.main(["gc"]) == cli.EXIT_ERROR
-    assert "--max-size is required" in capsys.readouterr().err
+    assert "give a budget" in capsys.readouterr().err
 
 
 def test_gc_rejects_a_bad_size(capsys, cache):

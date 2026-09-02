@@ -7,14 +7,16 @@ the real machine rather than assumed.
 
 import os
 import platform
+import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from . import __version__, report as report_mod
 from .discovery import PROTECTED_PREFIXES, DiscoveryError, discover_cache_dir, load_layout
 from .sizing import POSIX, format_size
+from .style import Style, labelled
 from .uvcmd import Uv, UvError, UvNotFound
 
 OK = "ok"
@@ -101,7 +103,11 @@ def _under(path: Path, mount_point: str) -> bool:
     return here == mount_point or here.startswith(mount_point.rstrip("/") + "/")
 
 
-def diagnose(cache_dir: Optional[Path] = None, uv_path: Optional[str] = None) -> Diagnosis:
+def diagnose(
+    cache_dir: Optional[Path] = None,
+    uv_path: Optional[str] = None,
+    progress: Optional[Callable[[int], None]] = None,
+) -> Diagnosis:
     result = Diagnosis()
     result.add(
         "uv-cache-warden",
@@ -155,10 +161,11 @@ def diagnose(cache_dir: Optional[Path] = None, uv_path: Optional[str] = None) ->
             names=sorted(layout.unknown),
         )
 
-    scan = report_mod.scan(layout, uv)
-    inventory = "; ".join(
+    scan = report_mod.scan(layout, uv, progress=progress)
+    # Biggest first: which bucket is eating the disk is the only reason to read this line.
+    inventory = "  ".join(
         "{} {}".format(layout.bucket_names.get(name, name), format_size(usage.disk_bytes))
-        for name, usage in sorted(scan.buckets.items())
+        for name, usage in sorted(scan.buckets.items(), key=lambda kv: -kv[1].disk_bytes)
     )
     result.add(
         "bucket sizes",
@@ -209,8 +216,8 @@ def diagnose(cache_dir: Optional[Path] = None, uv_path: Optional[str] = None) ->
     result.add(
         "hardlinks",
         OK,
-        "{} of {} files have more than one link; {} shared inside the cache, {} physical vs "
-        "{} counted by uv".format(
+        "{} of {} files are hardlinked, {} of it shared within the cache. Real footprint {}, "
+        "uv counts {}.".format(
             scan.total.hardlinked_files,
             scan.total.files,
             format_size(scan.total.shared_bytes),
@@ -238,6 +245,20 @@ def diagnose(cache_dir: Optional[Path] = None, uv_path: Optional[str] = None) ->
             detail = "{}; {}".format(detail, policy)
         result.add("access times", WARN, detail, reliable=False, policy=policy)
 
+    try:
+        usage = shutil.disk_usage(str(layout.root))
+        result.add(
+            "filesystem",
+            OK,
+            "{} free of {} where the cache lives".format(
+                format_size(usage.free), format_size(usage.total)
+            ),
+            free_bytes=usage.free,
+            total_bytes=usage.total,
+        )
+    except OSError as exc:
+        result.add("filesystem", WARN, "cannot read free space: {}".format(exc))
+
     result.add(
         "sizing mode",
         OK,
@@ -247,12 +268,17 @@ def diagnose(cache_dir: Optional[Path] = None, uv_path: Optional[str] = None) ->
     return result
 
 
-def render(diagnosis: Diagnosis) -> str:
+def render(diagnosis: Diagnosis, style: Optional[Style] = None) -> str:
+    style = style if style is not None else Style()
     width = max(len(check.name) for check in diagnosis.checks)
-    marks = {OK: "  ok  ", WARN: " warn ", FAIL: " fail "}
+    marks = {
+        OK: (" ok ", ("green",)),
+        WARN: ("warn", ("yellow",)),
+        FAIL: ("fail", ("red",)),
+    }
     lines = []
     for check in diagnosis.checks:
-        lines.append(
-            "[{}] {}  {}".format(marks[check.status], check.name.ljust(width), check.detail)
-        )
+        text, colour = marks[check.status]
+        mark = "[{}] ".format(style.paint(text, *colour))
+        lines.append(mark + labelled(check.name, check.detail, width, style, indent=len(text) + 3))
     return "\n".join(lines)

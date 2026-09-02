@@ -1,5 +1,7 @@
 import time
 
+import pytest
+
 from uv_cache_warden import gc, report
 
 from conftest import FakeUv, write_file
@@ -147,3 +149,51 @@ def test_json_payload_is_complete(cache):
     assert payload["budget_bytes"] == 1
     assert payload["size_before_bytes"] == payload["size_after_bytes"]
     assert len(payload["evicted"]) == 3
+
+
+def test_budget_for_prefers_the_tighter_constraint(cache, monkeypatch):
+    layout = build_three(cache)
+    class Usage:
+        def __init__(self, free):
+            self.free = free
+
+    monkeypatch.setattr(gc.shutil, "disk_usage", lambda path: Usage(free=10_000))
+
+    # 5,000 bytes of headroom are missing, so the cache must give back 5,000 of its 100,000.
+    budget, bound = gc.budget_for(100_000, layout.root, max_size=None, min_free=15_000)
+    assert (budget, bound) == (95_000, gc.BOUND_MIN_FREE)
+
+    budget, bound = gc.budget_for(100_000, layout.root, max_size=90_000, min_free=15_000)
+    assert (budget, bound) == (90_000, gc.BOUND_MAX_SIZE)
+
+    budget, bound = gc.budget_for(100_000, layout.root, max_size=99_000, min_free=None)
+    assert (budget, bound) == (99_000, gc.BOUND_MAX_SIZE)
+
+
+def test_budget_for_is_a_noop_when_the_disk_has_room(cache, monkeypatch):
+    layout = build_three(cache)
+
+    class Usage:
+        free = 10**12
+
+    monkeypatch.setattr(gc.shutil, "disk_usage", lambda path: Usage())
+    budget, bound = gc.budget_for(100_000, layout.root, max_size=None, min_free=20 * 10**9)
+    assert budget == 100_000 and bound == gc.BOUND_MIN_FREE
+
+
+def test_budget_for_needs_at_least_one_constraint(cache):
+    layout = build_three(cache)
+    with pytest.raises(ValueError):
+        gc.budget_for(100_000, layout.root)
+
+
+def test_dry_run_says_when_the_plan_falls_short(cache):
+    """A dry run that cannot reach the budget must say so; --fail-over exits 2 on it."""
+    layout = build_three(cache)
+    uv = FakeUv(cache_dir=layout.root, size=lambda: measured(layout))
+    result = gc.run(layout, uv, budget=1000, min_age=7 * DAY, dry_run=True)
+
+    text = gc.render(result)
+    assert result.over_budget
+    assert "still over budget" in text
+    assert gc.SKIP_MIN_AGE in text

@@ -307,7 +307,18 @@ def scandir_tree(
 
 
 def walk(root: Path) -> Iterator[Tuple[str, Tuple[str, ...], os.stat_result, bool]]:
-    """Yield (path, parts-relative-to-root, stat, is_dir) for every entry under `root`."""
+    """Yield (path, parts-relative-to-root, stat, is_dir) for `root` and everything under it.
+
+    `root` itself comes first, with empty `parts`. diskus counts the path it is given, so
+    omitting it puts us under `uv cache size` by the size of the cache directory's own index,
+    which on NTFS is zero until the directory grows and then jumps to 4 KiB or more.
+    """
+    try:
+        root_st = os.stat(str(root), follow_symlinks=False)
+    except OSError:
+        return
+    yield str(root), (), root_st, stat.S_ISDIR(root_st.st_mode) and not is_reparse(root_st)
+
     for entry, parts in scandir_tree(root):
         st = stat_entry(entry)
         if st is None:
@@ -316,18 +327,9 @@ def walk(root: Path) -> Iterator[Tuple[str, Tuple[str, ...], os.stat_result, boo
 
 
 def measure_tree(root: Path, counter: Optional[Counter] = None) -> Usage:
-    """Total one subtree, including `root` itself.
-
-    diskus counts the path it was given, so the cache root's own directory entry is part of
-    what `uv cache size` reports.
-    """
+    """Total one subtree, `root` included."""
     counter = counter if counter is not None else Counter()
     usage = Usage()
-    try:
-        root_st = os.stat(str(root), follow_symlinks=False)
-    except OSError:
-        return usage
-    counter.add(usage, root_st, stat.S_ISDIR(root_st.st_mode))
     for _path, _parts, st, is_dir in walk(root):
         counter.add(usage, st, is_dir)
     return usage

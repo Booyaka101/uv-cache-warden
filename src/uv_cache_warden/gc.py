@@ -10,18 +10,24 @@ survive. So when the measured size is still over budget and eligible packages re
 analysis runs again. `MAX_ROUNDS` bounds that; a round which evicts nothing ends it.
 """
 
+import shutil
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import report as report_mod
 from .attribute import is_package_name
-from .discovery import CacheLayout
+from .discovery import CacheLayout, DiscoveryError
 from .report import Scan
 from .sizing import format_age, format_size, measure_tree
+from .style import LEFT, RIGHT, Style, table
 from .uvcmd import Uv, UvError
 
 MAX_ROUNDS = 3
+
+BOUND_MAX_SIZE = "--max-size"
+BOUND_MIN_FREE = "--min-free"
 
 SKIP_KEEP = "kept by --keep"
 SKIP_MIN_AGE = "used within --min-age"
@@ -65,6 +71,8 @@ class Plan:
     projected: int = 0
     unattributed_bytes: int = 0
     protected_bytes: int = 0
+    package_count: int = 0
+    """Attributed packages in the cache, so the plan can say how much of it is going."""
 
     @property
     def over_budget(self) -> bool:
@@ -100,6 +108,9 @@ class Result:
     pruned: bool = False
     prune_detail: str = ""
     atime_reliable: bool = True
+    bound_by: str = BOUND_MAX_SIZE
+    free_before: Optional[int] = None
+    free_after: Optional[int] = None
     rounds: int = 0
     duration: float = 0.0
 
@@ -127,6 +138,35 @@ class Result:
         return self.projected_after > self.budget
 
 
+def budget_for(
+    cache_size: int,
+    root: Path,
+    max_size: Optional[int] = None,
+    min_free: Optional[int] = None,
+) -> Tuple[int, str]:
+    """Turn the size constraints into one byte budget, and name whichever one binds.
+
+    `--min-free` is about the filesystem, not the cache: to leave N bytes free we have to give
+    back whatever the disk is short, so the cache budget is its current size minus that shortfall.
+    When both are given the tighter one wins.
+    """
+    candidates: List[Tuple[int, str]] = []
+    if max_size is not None:
+        candidates.append((max_size, BOUND_MAX_SIZE))
+    if min_free is not None:
+        try:
+            free = shutil.disk_usage(str(root)).free
+        except OSError as exc:
+            raise DiscoveryError(
+                "Cannot read free space for {}: {}".format(root, exc)
+            )
+        shortfall = max(0, min_free - free)
+        candidates.append((max(0, cache_size - shortfall), BOUND_MIN_FREE))
+    if not candidates:
+        raise ValueError("at least one of max_size or min_free is required")
+    return min(candidates, key=lambda item: item[0])
+
+
 def plan(
     scan: Scan,
     budget: int,
@@ -143,6 +183,7 @@ def plan(
         projected=current,
         unattributed_bytes=scan.unattributed.disk_bytes,
         protected_bytes=scan.protected.disk_bytes,
+        package_count=len(scan.packages),
     )
     if current <= budget:
         return result
@@ -183,10 +224,12 @@ def run(
     keep: Sequence[str] = (),
     dry_run: bool = False,
     prune: bool = True,
+    progress: Optional[Callable[[int], None]] = None,
+    bound_by: str = BOUND_MAX_SIZE,
 ) -> Result:
     """Scan, evict, prune, re-measure. `dry_run` invokes no mutating uv command at all."""
     started = time.time()
-    scan = report_mod.scan(layout, uv)
+    scan = report_mod.scan(layout, uv, progress=progress)
     size_before = scan.uv_cache_size if scan.uv_cache_size is not None else scan.total.disk_bytes
 
     result = Result(
@@ -196,6 +239,8 @@ def run(
         size_after=size_before,
         dry_run=dry_run,
         atime_reliable=scan.atime_reliable,
+        bound_by=bound_by,
+        free_before=_free(layout.root),
     )
 
     initially_over = size_before > budget
@@ -205,7 +250,7 @@ def run(
 
     for round_index in range(MAX_ROUNDS):
         if current_scan is None:
-            current_scan = report_mod.scan(layout, uv)
+            current_scan = report_mod.scan(layout, uv, progress=progress)
             current_size = (
                 current_scan.uv_cache_size
                 if current_scan.uv_cache_size is not None
@@ -264,8 +309,16 @@ def run(
             )
         result.size_after = _measure(uv, layout)
 
+    result.free_after = _free(layout.root)
     result.duration = time.time() - started
     return result
+
+
+def _free(root: Path) -> Optional[int]:
+    try:
+        return shutil.disk_usage(str(root)).free
+    except OSError:
+        return None
 
 
 def _measure(uv: Uv, layout: CacheLayout) -> int:
@@ -288,26 +341,39 @@ def _first_error(stderr: str) -> str:
     return ""
 
 
-def render(result: Result) -> str:
-    lines: List[str] = []
-    lines.append(
-        "cache {}  budget {}  currently {}".format(
-            result.cache_dir, format_size(result.budget), format_size(result.size_before)
+def render(result: Result, style: Optional[Style] = None) -> str:
+    style = style if style is not None else Style()
+    lines: List[str] = [
+        "{}  budget {} ({})  currently {}".format(
+            style.heading("cache " + result.cache_dir),
+            style.heading(format_size(result.budget)),
+            result.bound_by,
+            style.heading(format_size(result.size_before)),
         )
-    )
+    ]
+    if result.free_before is not None:
+        lines.append(
+            style.dim("  {} free on this filesystem".format(format_size(result.free_before)))
+        )
+
     first = result.plans[0] if result.plans else None
     if first is not None and not first.over_budget:
         lines.append(
-            "Already under budget ({} <= {}). Nothing to do.".format(
-                format_size(result.size_before), format_size(result.budget)
+            style.paint(
+                "Already under budget ({} <= {}). Nothing to do.".format(
+                    format_size(result.size_before), format_size(result.budget)
+                ),
+                "green",
             )
         )
         return "\n".join(lines)
 
     if not result.atime_reliable:
         lines.append(
-            "note: access times are not tracked on this filesystem, so eviction order is by "
-            "write time rather than true last use."
+            style.note(
+                "access times are not tracked on this filesystem, so eviction order is by "
+                "write time rather than true last use."
+            )
         )
 
     if not result.evicted:
@@ -318,61 +384,93 @@ def render(result: Result) -> str:
                     format_size(result.reclaimed), format_size(result.size_after)
                 )
             )
-        if result.over_budget:
-            lines.extend(_explain_shortfall(result))
+        lines.extend(_outcome(result, style))
         return "\n".join(lines)
 
     lines.append("")
-    header = "would evict" if result.dry_run else "evicted"
-    lines.append("{} ({}):".format(header, len(result.evicted)))
-    width = max(len(item.name) for item in result.evicted)
-    ages = {c.name: c.age_seconds for plan_ in result.plans for c in plan_.evict}
-    for item in result.evicted:
-        status = "" if item.ok else "  FAILED: {}".format(item.detail)
-        lines.append(
-            "  {}  {:>10}  {}{}".format(
-                item.name.ljust(width),
-                format_size(item.disk_bytes),
-                format_age(ages.get(item.name)),
-                status,
-            )
-        )
-
-    lines.append("")
-    if result.dry_run:
-        projected = result.plans[0].projected
-        lines.append(
-            "dry run: nothing was removed. Projected {} -> {} (budget {}).".format(
-                format_size(result.size_before), format_size(projected), format_size(result.budget)
-            )
-        )
-        return "\n".join(lines)
-
-    if result.prune_detail:
-        lines.append("uv cache prune failed: {}".format(result.prune_detail))
+    total_packages = result.plans[0].package_count if result.plans else 0
     lines.append(
-        "reclaimed {}; cache now {} (budget {}); evicted {} package{}".format(
-            format_size(result.reclaimed),
-            format_size(result.size_after),
-            format_size(result.budget),
-            result.succeeded,
-            "" if result.succeeded == 1 else "s",
+        style.heading(
+            "{} ({} of {} packages):".format(
+                "would evict" if result.dry_run else "evicted",
+                len(result.evicted),
+                total_packages,
+            )
         )
     )
-    if result.failed:
-        lines.append(
-            "{} package(s) could not be cleaned: {}".format(
-                len(result.failed), ", ".join(item.name for item in result.failed)
-            )
+    ages = {c.name: c.age_seconds for step in result.plans for c in step.evict}
+    rows = [
+        (
+            "  " + item.name,
+            format_size(item.disk_bytes),
+            format_age(ages.get(item.name)),
+            "" if item.ok else "FAILED: " + item.detail,
         )
-    if result.over_budget:
-        lines.extend(_explain_shortfall(result))
+        for item in result.evicted
+    ]
+    styles = [None if item.ok else ("red",) for item in result.evicted]
+    lines.append(table(rows, (LEFT, RIGHT, LEFT, LEFT), styles=styles, style=style))
+
+    lines.append("")
+    lines.extend(_outcome(result, style))
     return "\n".join(lines)
 
 
-def _explain_shortfall(result: Result) -> List[str]:
-    """Say why the budget was not reached, in terms of the rules that held bytes back."""
-    lines = ["still over budget by {}.".format(format_size(result.size_after - result.budget))]
+def _outcome(result: Result, style: Style) -> List[str]:
+    """The closing verdict, identical in shape whether or not anything was actually removed."""
+    lines: List[str] = []
+    if result.dry_run:
+        lines.append(
+            "dry run: nothing was removed. Projected {} -> {} (budget {}).".format(
+                format_size(result.size_before),
+                format_size(result.projected_after),
+                format_size(result.budget),
+            )
+        )
+    else:
+        if result.prune_detail:
+            lines.append(style.paint("uv cache prune failed: " + result.prune_detail, "red"))
+        if result.evicted:
+            lines.append(
+                "reclaimed {}; cache now {} (budget {}); evicted {} package{}".format(
+                    format_size(result.reclaimed),
+                    format_size(result.size_after),
+                    format_size(result.budget),
+                    result.succeeded,
+                    "" if result.succeeded == 1 else "s",
+                )
+            )
+        if result.failed:
+            lines.append(
+                style.paint(
+                    "{} package(s) could not be cleaned: {}".format(
+                        len(result.failed), ", ".join(item.name for item in result.failed)
+                    ),
+                    "red",
+                )
+            )
+    if result.over_budget:
+        lines.extend(_explain_shortfall(result, style))
+    elif not result.dry_run and result.evicted:
+        lines.append(style.paint("under budget.", "green"))
+    return lines
+
+
+def _explain_shortfall(result: Result, style: Style) -> List[str]:
+    """Say why the budget was not reached, in terms of the rules that held bytes back.
+
+    A dry run has to say this too. Reporting a plan that stops short of the budget without
+    saying so reads as success, and `--fail-over` would then exit 2 with no stated reason.
+    """
+    short = result.projected_after - result.budget
+    lines = [
+        style.paint(
+            "{} still over budget by {}.".format(
+                "projected:" if result.dry_run else "result:", format_size(short)
+            ),
+            "yellow",
+        )
+    ]
     last = result.plans[-1] if result.plans else None
     if last is None:
         return lines
@@ -404,11 +502,15 @@ def to_json(result: Result) -> dict:
         "reclaimed_bytes": result.reclaimed,
         "over_budget": result.over_budget,
         "atime_reliable": result.atime_reliable,
+        "bound_by": result.bound_by,
+        "free_before_bytes": result.free_before,
+        "free_after_bytes": result.free_after,
         "rounds": result.rounds,
         "pruned": result.pruned,
         "prune_detail": result.prune_detail,
         "evicted": [item.as_json() for item in result.evicted],
         "evicted_count": result.succeeded,
+        "package_count": result.plans[0].package_count if result.plans else 0,
         "failed": [item.as_json() for item in result.failed],
         "skipped": [item.as_json() for item in result.skipped],
         "unattributed_bytes": result.plans[0].unattributed_bytes if result.plans else 0,

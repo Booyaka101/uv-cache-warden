@@ -6,20 +6,26 @@ Last updated 2026-09-02.
 
 ## What is VERIFIED working
 
-Verified on Windows 11, `uv 0.12.9`, Python 3.12.10, against real uv caches built by installing
-real packages from PyPI. Every number below came out of an actual run, not a test double.
+Verified on Windows 11, `uv 0.12.9`, Python 3.12.10, against two real uv caches built by
+installing real packages from PyPI (34 packages / 248 MiB, and a 1.9 GiB / 58k-file variant).
+Every number below came out of an actual run of the installed wheel, not a test double.
 
 | Check | Result |
 |---|---|
-| `uvcw doctor` | prints cache dir, uv version, bucket inventory, reconciliation, hardlink stats, atime policy. Exit 0. |
-| `uvcw report --json` reconciles with `uv cache size` | 89,698,856 vs 89,702,952 bytes = **0.0046%**, well inside 2% |
-| Byte-exact reconciliation on a static cache | ours 7,344,134 vs `uv cache size` 7,344,134 = **0 bytes** |
-| `uvcw gc --dry-run` names packages, mutates nothing | named `numpy` and `pandas`, `uv cache size` unchanged at 89,702,952 |
-| `uvcw gc` brings the cache under budget | 89,702,952 -> 10,342,604 against a 44,702,952 budget. Exit 0. |
-| Bad input, missing cache, no uv, bad size literal | each a one-line message on stderr and exit 1, no traceback |
-| `--min-age` + `--fail-over` when unreachable | exits 2, explains min-age and unattributed bytes |
+| `uvcw doctor` | 11 checks: cache dir, uv version, buckets, sizes, packages, reconciliation, hardlinks, access times, filesystem, sizing mode. Exit 0. |
+| Reconciliation, 248 MiB cache | uvcw 259,755,955 vs `uv cache size` 259,755,955 = **byte-exact** |
+| Reconciliation, 1.9 GiB cache | uvcw 2,056,888,558 vs `uv cache size` 2,056,888,558 = **byte-exact** |
+| Cross-check against an independent `os.walk` | identical to both, 58,066 files / 5,633 dirs |
+| `uvcw gc --dry-run` mutates nothing | named 18 of 34 packages, `uv cache size` unchanged at 259,755,955 |
+| `uvcw gc` reaches the budget | 259,755,955 -> 116,818,274 against a 150,000,000 budget. Exit 0. |
+| Dry run that falls short | says "projected: still over budget by 10.0 MiB" and why; `--fail-over` exits 2 |
+| `--min-free` | 150 MB shortfall on the disk produced a 104.7 MiB cache budget; header names `--min-free` |
+| `--max-size` and `--min-free` together | tighter one wins, header names it |
 | Already under budget | no-op, exit 0 |
-| Unit tests | **114 passed**, 0 failed, no network |
+| Bad input, missing cache, no uv, bad size literal | one-line message on stderr and exit 1, no traceback |
+| Colour rules | `NO_COLOR` beats `FORCE_COLOR`; pipes, `--json` and `--no-color` all plain; Windows VT enabled explicitly |
+| Progress counter | appears at 62,000 entries on the 1.9 GiB cache, silent on fast scans, zero bytes on stderr when piped |
+| Unit tests | **139 passed**, 0 failed, no network |
 | Integration tests | **2 passed** against real uv + PyPI |
 | Wheel installs from a clean venv | `uv-cache-warden==1.0.0`, zero dependencies, `uvcw --version` works |
 | `twine check` | PASSED on wheel and sdist |
@@ -27,6 +33,9 @@ real packages from PyPI. Every number below came out of an actual run, not a tes
 Reproduce: `python -m pytest -q` then `python -m pytest -q -m integration`.
 The CI workflow runs the same acceptance checks on Linux, macOS and Windows across
 Python 3.9-3.13.
+
+Screenshots in `docs/` were taken by driving a real PowerShell console and capturing the window,
+not mocked up.
 
 ## Owner steps remaining (all require accounts or pushes, so none were done here)
 
@@ -82,18 +91,22 @@ wants the table in the log *and* the data on disk), and `report --sort {size,age
 
 ### House-rules checks
 
-- **Clone check.** `difflib.SequenceMatcher` over the line lists of all 67 functions in `src/`.
+- **Clone check.** `difflib.SequenceMatcher` over the line lists of all 86 functions in `src/`.
   The first pass found `attribute._walk_entries` and `sizing.walk` at 45%, two directory
   walkers. Below the 60% threshold, but it was real duplication, so the shared mechanism was
   extracted into `sizing.scandir_tree(root, prune=...)` and both callers now use it. The highest
   remaining pair is 46%, two three-line `as_json` dataclass serialisers with different fields;
   a shared base class there would add indirection for six lines, so that is where it stops.
-  Next is `parse_size` vs `parse_duration` at 34%, kept apart deliberately: merging them would
-  make their error messages generic, and those messages are user-facing.
+  Next is `_cmd_doctor` vs `_cmd_report` at 40%, two different workflows whose shared parts are
+  already extracted into `_emit`, `_style` and `_progress`, then `parse_size` vs
+  `parse_duration` at 34%, kept apart deliberately: merging them would make their error messages
+  generic, and those messages are user-facing.
 - **Dead code.** `pyflakes` clean. `Plan.reachable` was written and never used, so it is gone.
   `discovery.NAME_INDEXED` existed as a constant while `report.scan` inlined the same tuple; the
   constant is now used. `format_size` had an unreachable `raise AssertionError` after its loop
-  and was rewritten so the branch does not exist.
+  and was rewritten so the branch does not exist. `discovery.open_cache` was never called and is
+  gone. A `bar()` helper written for the report was deleted rather than shipped unused once the
+  percentage column replaced it.
 - **Comments.** Only where a constraint is non-obvious: why the stderr pump is not
   `communicate()`, why directories count on Windows, why a package is recorded as evicted before
   the call, why the fake never ships. No rationale essays.
@@ -102,36 +115,70 @@ wants the table in the log *and* the data on disk), and `report --sort {size,age
 - **No TODO/FIXME/placeholder anywhere.** Checked by grep across `src`, `tests`, `action.yml`,
   the workflows and the docs.
 
+### Second review pass: what the screenshots showed
+
+The first version was reviewed by driving a real PowerShell console, capturing the window and
+reading the images. Four things were only visible that way:
+
+- **The report scrolled its own header off.** 34 packages on a standard window left a wall of
+  unlabelled numbers. A terminal now stops at 20 rows with a `... N more` line carrying the
+  remainder; `--all` and any piped or JSON output are still complete.
+- **Sizes were left-aligned**, so `876.1 KiB` and `1.1 MiB` did not line up and the column was
+  unreadable. Right-aligned now.
+- **No sense of proportion.** A `SHARE` column was added. The first attempt was an eight-cell
+  bar, which rendered 41 MiB and 24 KiB identically because everything under 12% rounded to one
+  cell. That is worse than no column, so it was replaced with an exact percentage.
+- **`doctor` wrapped long details back to column zero**, destroying the alignment that made it
+  readable. Details now wrap under the detail column.
+
+Two bugs were found by the same pass, both invisible to the test suite as it stood:
+
+- **A dry run that could not reach the budget did not say so.** It printed
+  `Projected 247.7 MiB -> 153.0 MiB (budget 143.1 MiB)` and stopped, which reads as success,
+  while `--fail-over` was quietly exiting 2. The wet path explained itself; the dry path did
+  not. Both now share one `_outcome` helper.
+- **The cache root's own directory entry was never counted.** `uv cache size` counts the path it
+  is given. On NTFS a directory reports zero until it outgrows its resident index, so this was
+  exactly zero bytes on every cache tested until one grew, then 8 KiB. Caught by the growing
+  test cache, fixed by having `walk` yield the root, and now pinned by a test asserting the
+  classified pass and the flat pass agree.
+
 ### (f) Features that would make this best in class
 
 Built, because they were clearly right and cheap:
 
 - `report --sort age`: the coldest-first order is exactly what `gc` will evict, so it previews a
   budget without running one.
+- `report --top` default of 20 on a terminal, plus `--all`, plus a `SHARE` percentage column.
+- `gc --min-free SIZE`: budget against the filesystem rather than the cache. This is the shape a
+  runner that keeps filling its disk actually needs, and it is what jroesch's 1 TB case in #5731
+  is really asking for. Combined with `--max-size`, the tighter constraint wins and the header
+  names it.
+- Colour, with `NO_COLOR` / `FORCE_COLOR` / `--no-color` and never on JSON or a pipe. Windows
+  needs `SetConsoleMode(ENABLE_VIRTUAL_TERMINAL_PROCESSING)` explicitly, so that is done.
+- A stderr progress counter for slow scans. A 1 TB cache is roughly a million files; measured
+  here at about 27,000 entries a second on Windows, that is over half a minute of looking hung.
 - `--json-file PATH` on every command.
 - Prune even when nothing is evictable, which is the only way to reclaim the orphaned bytes in
   astral-sh/uv#16551.
-- Multi-round gc. A single projection pass silently under-evicts when a package's bytes are
-  hardlinked to bytes that survive; `gc` now re-measures and runs again, bounded at 3 rounds.
+- Multi-round gc, bounded at 3, because a single projection under-evicts when a package's bytes
+  are hardlinked to bytes that survive.
 
 Not built, listed as concrete next steps:
 
-- **`--min-free SIZE`**: evict until the *filesystem* has N bytes free rather than until the
-  cache is under N. `shutil.disk_usage` makes it trivial; the work is deciding how it interacts
-  with `--max-size` and `--fail-over`, which is a design call, not a coding one. This is the
-  single most requested shape in #5731 after a plain size cap.
 - **Attribute source distributions from URL, path and Git.** uv identifies these by reading
   `metadata.msgpack`. A ~120-line msgpack reader for the subset uv writes would keep the
   stdlib-only promise and move those bytes out of `unattributed`.
-- **`uvcw gc --keep-project`**: read `uv.lock` / `pyproject.toml` in the working directory and
+- **`uvcw gc --keep-project`**: read `uv.lock` or `pyproject.toml` in the working directory and
   keep everything the current project depends on. Removes the main reason to type `--keep`.
-- **A `--since` filter on report**, to show only what has been added since a previous JSON dump.
-  Useful for finding which CI job is filling a shared runner cache.
-- **`osv-v0` and `python-v0` opt-in eviction.** Deliberately out of v1 scope, but a self-hosted
-  runner with ten managed interpreters may well want `--include-python`.
-- **Package name normalisation across index kinds.** uv writes normalised names, so this has not
-  bitten, but a package appearing under both `pypi` and an alternate index is currently counted
-  once per path and merged by exact name only.
+- **A size-aware tie-break within an age band.** Strict LRU will evict thirty small old packages
+  to get at one large new one. Bucketing by day and taking the largest first inside each bucket
+  would reach the same budget with far less churn, while still being recognisably LRU. This is
+  the most valuable remaining idea and the one that needs a design decision, not just code.
+- **`--since` on report**, to diff against an earlier JSON dump. Useful for finding which CI job
+  is filling a shared runner cache.
+- **Opt-in eviction of `python-v0` and `osv-v0`.** Out of v1 scope deliberately, but a runner
+  with ten managed interpreters may want `--include-python`.
 
 ## Where the shipped code came from
 

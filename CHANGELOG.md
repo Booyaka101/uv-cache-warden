@@ -21,6 +21,15 @@ First release.
   are tracked on this filesystem.
 - `--json-file PATH` on every command, so a run can print a human summary and emit machine
   data in one pass.
+- `uvcw gc --min-free SIZE`: budget against free space on the cache's filesystem rather than
+  against the cache. Combined with `--max-size`, the tighter constraint wins and the header
+  names which one is binding.
+- `uvcw report --sort {size,age,name}` and `--all`. On a terminal the table stops at 20 rows so
+  the header stays on screen; piped and JSON output are never truncated.
+- A `SHARE` column giving each package's percentage of the cache, and right-aligned sizes.
+- Colour on terminals, honouring `NO_COLOR`, `FORCE_COLOR` and `--no-color`, never applied to
+  JSON or to a redirected stream. Windows consoles get VT processing enabled explicitly.
+- A `scanning cache... N entries` counter on stderr for scans that run longer than 1.5 seconds.
 - Composite GitHub Action with `gc`, `dry-run` and `report` modes, outputs for
   `size-before`, `size-after`, `reclaimed`, `evicted`, `over-budget` and `json-path`, and a
   job summary table.
@@ -39,5 +48,11 @@ First release.
   junction, so a walk that only checks for symlinks would follow one straight out of the cache.
 - A package's last-used time ignores the `simple-*` bucket. `uv lock` rewrites that metadata for
   every package it resolves, which would otherwise make an entire lockfile look freshly used.
+- The cache root's own directory entry is counted. `uv cache size` counts the path it is given,
+  and on NTFS a directory reports zero until it outgrows its resident index, so omitting it was
+  invisible on a small cache and 8 KiB short on a larger one.
+- A dry run that cannot reach the budget says so, and says which rule held the bytes back. It
+  previously printed the projection and stopped, which read as success even while `--fail-over`
+  was exiting 2.
 
 [1.0.0]: https://github.com/Booyaka101/uv-cache-warden/releases/tag/v1.0.0

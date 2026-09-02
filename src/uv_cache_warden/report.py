@@ -7,7 +7,7 @@ global, and walking twice with two inode sets would double-count.
 
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Sequence
 
 from . import attribute
 from .attribute import Attribution
@@ -19,6 +19,7 @@ from .discovery import (
     bucket_prefix,
 )
 from .sizing import Counter, Usage, format_age, format_size, walk
+from .style import LEFT, RIGHT, Style, share, table
 from .uvcmd import Uv, UvError
 
 ROOT_BUCKET = "(root)"
@@ -93,16 +94,24 @@ class Scan:
         return abs(self.total.disk_bytes - self.uv_cache_size) / float(self.uv_cache_size)
 
 
-def scan(layout: CacheLayout, uv: Optional[Uv] = None) -> Scan:
+def scan(
+    layout: CacheLayout,
+    uv: Optional[Uv] = None,
+    progress: Optional[Callable[[int], None]] = None,
+) -> Scan:
     """Walk the whole cache root once and attribute every byte."""
     attribution = attribute.build(layout)
     result = Scan(layout=layout, attribution=attribution)
     counter = result.counter
 
     archive_usage: Dict[str, Usage] = {}
+    seen = 0
 
     for _path, parts, st, is_dir in walk(layout.root):
-        prefix = bucket_prefix(parts[0])
+        seen += 1
+        if progress is not None and seen % 2000 == 0:
+            progress(seen)
+        prefix = bucket_prefix(parts[0]) if parts else None
         bucket = prefix if prefix in layout.bucket_names else None
         target = result.buckets.setdefault(bucket or ROOT_BUCKET, Usage())
         entry_usage = Usage()
@@ -215,38 +224,74 @@ def _usage_json(usage: Usage) -> dict:
     }
 
 
-def render(result: Scan, top: Optional[int] = None, sort: str = SORT_SIZE) -> str:
+DEFAULT_TOP = 20
+"""Rows shown on a terminal when `--top` is not given.
+
+A 34-package cache scrolls its own header off a standard window, which leaves the reader with a
+wall of unlabelled numbers. Piped or JSON output is never truncated.
+"""
+
+
+def render(
+    result: Scan,
+    top: Optional[int] = None,
+    sort: str = SORT_SIZE,
+    style: Optional[Style] = None,
+) -> str:
+    style = style if style is not None else Style()
     packages = result.sorted_packages(sort)
     shown = packages[:top] if top is not None else packages
     hidden = len(packages) - len(shown)
+    total = result.total.disk_bytes
 
-    rows: List[Tuple[str, str, str, str]] = [("PACKAGE", "VERSIONS", "SIZE", "LAST USED")]
+    header = ("PACKAGE", "VERS", "SIZE", "SHARE", "LAST USED")
+    aligns = (LEFT, RIGHT, RIGHT, RIGHT, LEFT)
+    rows: List[Sequence[str]] = [header]
+    row_styles: List[Optional[Sequence[str]]] = [("bold",)]
+
     for package in shown:
         rows.append(
             (
                 package.name,
                 str(package.versions) if package.versions else "-",
                 format_size(package.usage.disk_bytes),
+                share(package.usage.disk_bytes, total),
                 format_age(result.age_of(package)),
             )
         )
+        row_styles.append(None)
+
     if hidden > 0:
-        remainder = sum(p.usage.disk_bytes for p in packages[len(shown) :])
+        remainder = sum(p.usage.disk_bytes for p in packages[len(shown):])
         rows.append(
-            ("... {} more".format(hidden), "", format_size(remainder), ""),
+            (
+                "... {} more".format(hidden),
+                "",
+                format_size(remainder),
+                share(remainder, total),
+                "",
+            )
         )
-    if result.unattributed.disk_bytes or not packages:
-        rows.append(("unattributed", "", format_size(result.unattributed.disk_bytes), ""))
-    if result.protected.disk_bytes:
-        rows.append(("protected", "", format_size(result.protected.disk_bytes), ""))
+        row_styles.append(("dim",))
+
+    for label, usage in (("unattributed", result.unattributed), ("protected", result.protected)):
+        if usage.disk_bytes or (label == "unattributed" and not packages):
+            rows.append(
+                (label, "", format_size(usage.disk_bytes), share(usage.disk_bytes, total), "")
+            )
+            row_styles.append(("dim",))
 
     total_note = ""
     if result.uv_cache_size is not None:
         total_note = "(uv cache size: {})".format(format_size(result.uv_cache_size))
-    rows.append(("TOTAL", "", format_size(result.total.disk_bytes), total_note))
+    rows.append(("TOTAL", "", format_size(result.total.disk_bytes), "", total_note))
+    row_styles.append(("bold",))
 
-    lines = [_format_table(rows)]
-    lines.extend(_footnotes(result))
+    lines = [table(rows, aligns, styles=row_styles, style=style)]
+    notes = _footnotes(result)
+    if notes:
+        lines.append("")
+        lines.extend(style.note(note) for note in notes)
     return "\n".join(lines)
 
 
@@ -296,12 +341,3 @@ def _footnotes(result: Scan) -> List[str]:
             "directly and cannot be cross-checked."
         )
     return notes
-
-
-def _format_table(rows: List[Tuple[str, str, str, str]]) -> str:
-    widths = [max(len(row[i]) for row in rows) for i in range(4)]
-    lines = []
-    for row in rows:
-        cells = [row[i].ljust(widths[i]) for i in range(4)]
-        lines.append("  ".join(cells).rstrip())
-    return "\n".join(lines)

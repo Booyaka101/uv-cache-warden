@@ -2,6 +2,8 @@
 
 Keep [uv](https://docs.astral.sh/uv/)'s package cache under a size budget, with least-recently-used eviction. Dependency-free Python CLI (`uvcw`) plus a GitHub Action.
 
+![uvcw report](docs/report.png)
+
 ## The problem
 
 uv's cache grows and never shrinks on its own. [astral-sh/uv#5731](https://github.com/astral-sh/uv/issues/5731) has been open since August 2024 with 53 reactions and 31 comments; people report caches at 99 GB, 140 GB, 150 GB, 200 GiB and, at NVIDIA, "routinely exceeding 1TB+". uv ships `uv cache size`, `uv cache clean [PACKAGE]` and `uv cache prune`, and [none of them takes a size or age argument](https://docs.astral.sh/uv/reference/cli/). `uv cache prune` only removes entries it considers unused, which is why [#16551](https://github.com/astral-sh/uv/issues/16551) (multi-GB of CUDA wheels left behind after `uv tool uninstall`) was closed as not planned.
@@ -31,98 +33,141 @@ $ uvx uv-cache-warden report
 ### `uvcw report`
 
 ```console
-$ uvcw report --top 6
-PACKAGE             VERSIONS  SIZE      LAST USED
-numpy               1         41.1 MiB  41 days ago
-pandas              1         34.6 MiB  22 days ago
-pygments            1         4.5 MiB   just now
-pytest              1         1.4 MiB   6 days ago
-rich                1         1.3 MiB   just now
-charset-normalizer  1         1.1 MiB   just now
-... 15 more                   4.3 MiB
-unattributed                  21.3 KiB
-TOTAL                         88.4 MiB  (uv cache size: 88.4 MiB)
-Access times on this filesystem never differ from modification times (noatime?), so LAST USED reflects when an entry was written.
+$ uvcw report --top 8
+PACKAGE       VERS       SIZE  SHARE  LAST USED
+scipy            1  106.0 MiB    43%  21 minutes ago
+numpy            1   41.1 MiB    17%  3 days ago
+pandas           1   34.6 MiB    14%  31 days ago
+matplotlib       1   22.9 MiB     9%  14 days ago
+pillow           1   14.8 MiB     6%  14 days ago
+fonttools        1   12.1 MiB     5%  31 days ago
+pygments         1    4.5 MiB     2%  47 days ago
+pytest           1    1.4 MiB    <1%  3 days ago
+... 26 more          10.2 MiB     4%
+unattributed         36.1 KiB    <1%
+TOTAL               247.7 MiB         (uv cache size: 247.7 MiB)
+
+note: Access times on this filesystem never differ from modification times (noatime?), so LAST USED
+  reflects when an entry was written.
 ```
 
-That last line is a real filesystem fact, not boilerplate. Windows disables NTFS last-access updates by default, so on this machine LRU falls back to write order, and `uvcw doctor` names the registry value responsible.
+On a terminal the table stops at 20 rows so the header stays on screen. `--all` shows everything, and piped output is never truncated. That closing note is a real filesystem fact, not boilerplate: Windows disables NTFS last-access updates by default, so on this machine LRU falls back to write order, and `uvcw doctor` names the registry value responsible.
 
-`--sort age` reorders the table coldest-first, which is the order `gc` evicts in, so `uvcw report --sort age --top 10` previews what a budget would take.
+`--sort age` reorders the table coldest-first, which is the order `gc` evicts in, so it previews what a budget would take:
+
+```console
+$ uvcw report --sort age --top 5
+PACKAGE          VERS       SIZE  SHARE  LAST USED
+colorama            1  108.8 KiB    <1%  63 days ago
+python-dateutil     1  451.2 KiB    <1%  63 days ago
+requests            1  298.8 KiB    <1%  63 days ago
+httpx               1  330.7 KiB    <1%  47 days ago
+pygments            1    4.5 MiB     2%  47 days ago
+... 29 more            242.0 MiB    98%
+unattributed            36.1 KiB    <1%
+TOTAL                  247.7 MiB         (uv cache size: 247.7 MiB)
+```
 
 `--json` gives the same data with per-package `disk_bytes`, `physical_bytes`, `reclaim_bytes`, `age_seconds`, a bucket inventory and the reconciliation delta against `uv cache size`. `--json-file PATH` writes that alongside the table instead of replacing it, which is what you want in a CI log.
 
 ### `uvcw gc`
 
+![uvcw gc](docs/gc.png)
+
+A dry run changes nothing and shows exactly what the real run would do:
+
 ```console
-$ uvcw gc --max-size 50MB --min-age 7d --dry-run
-cache D:\tmp\uvcw-acc2  budget 47.7 MiB  currently 88.4 MiB
-note: access times are not tracked on this filesystem, so eviction order is by write time rather than true last use.
+$ uvcw gc --max-size 150MB --min-age 7d --dry-run
+cache D:\tmp\uvcw-live  budget 143.1 MiB (--max-size)  currently 247.7 MiB
+  489.6 GiB free on this filesystem
+note: access times are not tracked on this filesystem, so eviction order is by write time rather
+  than true last use.
 
-would evict (1):
-  numpy    41.1 MiB  41 days ago
+would evict (18 of 34 packages):
+  colorama            108.8 KiB  63 days ago
+  python-dateutil     451.2 KiB  63 days ago
+  requests            298.8 KiB  63 days ago
+  ...
+  anyio               557.3 KiB  9 days ago
+  httpcore            329.5 KiB  9 days ago
 
-dry run: nothing was removed. Projected 88.4 MiB -> 47.3 MiB (budget 47.7 MiB).
+dry run: nothing was removed. Projected 247.7 MiB -> 153.0 MiB (budget 143.1 MiB).
+projected: still over budget by 10.0 MiB.
+  153.0 MiB held back by packages used within --min-age
+  36.1 KiB is unattributed (no package name to pass to `uv cache clean`); only `uv cache prune` can touch it
 ```
 
-Drop `--dry-run` and it evicts oldest-first, stopping the moment the projected total is under budget, then runs `uv cache prune` once and re-measures. The `Removed ...` and `Pruning cache at:` lines come from uv itself, streamed through as they happen so a wait on the cache lock is visible while it is still happening:
+That plan falls short of the budget, and the run says so up front rather than leaving you to compare the two numbers. `--fail-over` turns it into exit 2. Relaxing `--min-age` lets it through:
 
 ```console
-$ uvcw gc --max-size 50MB --min-age 7d
+$ uvcw gc --max-size 150MB --min-age 3d --fail-over
+Removed 22 files (100.8KiB)
+Removed 30 files (447.2KiB)
+...
 Removed 1066 files (40.9MiB)
-Pruning cache at: D:\tmp\uvcw-acc2
+Pruning cache at: D:\tmp\uvcw-live
 No unused entries found
-cache D:\tmp\uvcw-acc2  budget 47.7 MiB  currently 88.4 MiB
-note: access times are not tracked on this filesystem, so eviction order is by write time rather than true last use.
+cache D:\tmp\uvcw-live  budget 143.1 MiB (--max-size)  currently 247.7 MiB
+  489.6 GiB free on this filesystem
 
-evicted (1):
-  numpy    41.1 MiB  41 days ago
+evicted (20 of 34 packages):
+  colorama            108.8 KiB  63 days ago
+  ...
+  numpy                41.1 MiB  3 days ago
 
-reclaimed 41.1 MiB; cache now 47.3 MiB (budget 47.7 MiB); evicted 1 package
+reclaimed 136.3 MiB; cache now 111.4 MiB (budget 143.1 MiB); evicted 20 packages
+under budget.
 ```
+
+The `Removed ...` and `Pruning cache at:` lines come from uv itself, streamed through as they happen so a wait on the cache lock is visible while it is still happening.
 
 Already under budget is a no-op that exits 0:
 
 ```console
 $ uvcw gc --max-size 10GB
-cache D:\tmp\uvcw-acc2  budget 9.3 GiB  currently 47.3 MiB
-Already under budget (47.3 MiB <= 9.3 GiB). Nothing to do.
+cache D:\tmp\uvcw-live  budget 9.3 GiB (--max-size)  currently 111.4 MiB
+  489.6 GiB free on this filesystem
+Already under budget (111.4 MiB <= 9.3 GiB). Nothing to do.
 ```
 
-If the budget cannot be met, it says which rule held the bytes back and exits 0, or 2 with `--fail-over`:
+`--min-free` budgets against the filesystem rather than the cache, which is what a runner that keeps filling its disk actually wants. To leave 500 GB free on a disk with 489.6 GiB spare, the cache has to give back the shortfall:
 
 ```console
-$ uvcw gc --max-size 1MB --min-age 90d --fail-over
-Pruning cache at: D:\tmp\uvcw-acc2
-No unused entries found
-cache D:\tmp\uvcw-acc2  budget 976.6 KiB  currently 47.3 MiB
-note: access times are not tracked on this filesystem, so eviction order is by write time rather than true last use.
-No package is eligible for eviction.
-still over budget by 46.4 MiB.
-  47.3 MiB held back by packages used within --min-age
-  21.3 KiB is unattributed (no package name to pass to `uv cache clean`); only `uv cache prune` can touch it
-$ echo $?
-2
+$ uvcw gc --min-free 500GB --dry-run
+cache D:\tmp\uvcw-live  budget 104.7 MiB (--min-free)  currently 247.7 MiB
+  489.6 GiB free on this filesystem
 ```
 
-Note the prune in that run. Even with nothing evictable, `gc` still runs `uv cache prune` once when the cache is over budget, because unreferenced archive bytes are reclaimable only there. That is the [#16551](https://github.com/astral-sh/uv/issues/16551) case.
+Give both and the tighter one wins; the header always names which constraint is binding. Even with nothing evictable, `gc` still runs `uv cache prune` once when the cache is over budget, because unreferenced archive bytes are reclaimable only there. That is the [#16551](https://github.com/astral-sh/uv/issues/16551) case.
 
 ### `uvcw doctor`
 
+![uvcw doctor](docs/doctor.png)
+
 ```console
 $ uvcw doctor
-[  ok  ] uv-cache-warden  1.0.0 on Python 3.12.10 (Windows-11-10.0.26200-SP0)
-[  ok  ] uv               uv 0.12.9 (9f9286029 2026-09-01 x86_64-pc-windows-msvc) at D:\tmp\uvcw-venv\Scripts\uv.EXE
-[  ok  ] cache directory  D:\tmp\uvcw-acc2 (from uv cache dir)
-[  ok  ] buckets          archive-v0, interpreter-v4, sdists-v9, simple-v24, wheels-v6
-[  ok  ] bucket sizes     (root) 44 B; archive-v0 85.5 MiB; interpreter-v4 5.2 KiB; sdists-v9 0 B; simple-v24 2.9 MiB; wheels-v6 35.9 KiB
-[  ok  ] packages         21 attributed, 21.3 KiB unattributed, 0 B protected (osv, python)
-[  ok  ] reconciliation   uvcw 88.4 MiB vs `uv cache size` 88.4 MiB (0.00%)
-[  ok  ] hardlinks        4129 of 4285 files have more than one link; 0 B shared inside the cache, 88.4 MiB physical vs 88.4 MiB counted by uv
-[ warn ] access times     access times never differ from modification times, so eviction falls back to write order; NtfsDisableLastAccessUpdate=2147483649 (updates disabled)
-[  ok  ] sizing mode      st_size, uv does not dedupe here
+[ ok ] uv-cache-warden  1.0.0 on Python 3.12.10 (Windows-11-10.0.26200-SP0)
+[ ok ] uv               uv 0.12.9 (9f9286029 2026-09-01 x86_64-pc-windows-msvc) at
+                        D:\tmp\uvcw-venv\Scripts\uv.EXE
+[ ok ] cache directory  D:\tmp\uvcw-live (from uv cache dir)
+[ ok ] buckets          archive-v0, interpreter-v4, sdists-v9, simple-v24, wheels-v6
+[ ok ] bucket sizes     archive-v0 241.2 MiB  simple-v24 6.5 MiB  wheels-v6 57.4 KiB  (root) 8.0 KiB
+                        interpreter-v4 4.0 KiB  sdists-v9 0 B
+[ ok ] packages         34 attributed, 36.1 KiB unattributed, 0 B protected (osv, python)
+[ ok ] reconciliation   uvcw 247.7 MiB vs `uv cache size` 247.7 MiB (0.00%)
+[ ok ] hardlinks        6937 of 7183 files are hardlinked, 0 B of it shared within the cache. Real
+                        footprint 247.7 MiB, uv counts 247.7 MiB.
+[warn] access times     access times never differ from modification times, so eviction falls back to
+                        write order; NtfsDisableLastAccessUpdate=2147483649 (updates disabled)
+[ ok ] filesystem       489.6 GiB free of 1.8 TiB where the cache lives
+[ ok ] sizing mode      st_size, uv does not dedupe here
 ```
 
 `doctor` exits 1 if any check fails, so it works as a preflight step.
+
+### Output
+
+Colour is on for terminals and off everywhere else. `NO_COLOR` disables it, `FORCE_COLOR` forces it, `--no-color` does the same per command, and `--json` is never coloured. A scan of a large cache prints a `scanning cache... 62,000 entries` counter on stderr, but only after it has already been running for a second and a half, so quick runs stay silent and piped output stays clean.
 
 ## GitHub Action
 
@@ -159,6 +204,7 @@ Flags win; environment variables fill in defaults. There is no config file.
 | `UVCW_UV` | `--uv` |
 | `UVCW_TIMEOUT` | `--timeout` (seconds, default 900) |
 | `UVCW_MAX_SIZE` | `gc --max-size` |
+| `UVCW_MIN_FREE` | `gc --min-free` |
 | `UVCW_MIN_AGE` | `gc --min-age` |
 | `UVCW_KEEP` | `gc --keep`, comma-separated |
 
@@ -177,6 +223,8 @@ The cache directory is found by running `uv cache dir`. If that fails, it falls 
 | Unix | `st_blocks * 512` | counted | yes, by `(dev, ino)` when `nlink > 1` |
 | Windows | `st_size` | counted, at their NTFS index allocation | none, [by design](https://github.com/sharkdp/diskus/issues/32) |
 
+The cache directory's own entry counts too, which on NTFS is zero until the directory outgrows its resident index and then jumps to 4 KiB or more.
+
 That number, `disk_bytes`, is what the budget is measured against, because it is the number the user sees. Two others appear in `--json`:
 
 - `physical_bytes`: inode dedupe on *both* platforms. uv 0.12.7 added the `content-addressed-cache` preview feature, which hardlinks identical files within and across cached wheels, so on Windows this can sit well below `disk_bytes`.
@@ -191,6 +239,7 @@ Package attribution comes from uv's own layout. `wheels-*/<kind>/<package>/`, `s
 - **Managed Python interpreters (`python-v0`) and the vulnerability database (`osv-v0`) are never evicted.** They count toward the total and are reported separately as `protected`.
 - **Recency ignores the simple-index bucket.** `uv lock` revalidates `simple-*` metadata for every package it resolves, so those files are freshly written even for a package nobody has installed in months. Their bytes count toward a package's size; their timestamps do not move its clock.
 - **LRU degrades to write order where access times are not tracked.** Windows disables NTFS last-access updates by default and Linux mounts are commonly `noatime`; `uvcw doctor` and `uvcw gc` both say so when it applies. `last_used` is `max(atime, mtime)`, so it degrades to first-write rather than to nonsense.
+- **Strict LRU can evict a lot to reach a little.** Eviction is oldest-first by design, so if the one package standing between you and the budget is also the newest, everything older goes first. The header says how many of your packages that is, and `--dry-run` shows the list before anything happens.
 - **Projection is not measurement.** Evicting a package whose bytes are hardlinked to bytes that survive frees less than expected, so `gc` re-measures with `uv cache size` and runs the analysis again (up to three rounds) if it is still over. The printed `reclaimed` figure is always measured, never projected.
 - **On a uv too old for `uv cache size`, totals come from our own walk** and there is nothing to cross-check them against. `doctor` warns when that happens.
 - No daemon, no config file, no telemetry.
@@ -201,7 +250,7 @@ Package attribution comes from uv's own layout. `wheels-*/<kind>/<package>/`, `s
 $ git clone https://github.com/Booyaka101/uv-cache-warden
 $ cd uv-cache-warden
 $ python -m pip install -e ".[dev]"
-$ python -m pytest -q                 # 114 unit tests, no network
+$ python -m pytest -q                 # 139 unit tests, no network
 $ python -m pytest -q -m integration  # needs uv on PATH and PyPI access
 ```
 
