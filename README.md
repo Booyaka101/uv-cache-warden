@@ -182,7 +182,7 @@ Colour is on for terminals and off everywhere else. `NO_COLOR` disables it, `FOR
     keep: torch
 ```
 
-Inputs: `max-size`, `min-age`, `keep` (comma-separated), `mode` (`gc`, `dry-run` or `report`), `fail-over`, `cache-dir`, `timeout`, `version`, `summary`.
+Inputs: `max-size`, `min-free`, `min-age`, `keep` (comma-separated), `mode` (`gc`, `dry-run` or `report`), `fail-over`, `cache-dir`, `timeout`, `version`, `summary`.
 Outputs: `size-before`, `size-after`, `reclaimed`, `evicted`, `over-budget`, `json-path`. It writes a job summary table by default.
 
 A self-hosted runner that keeps its cache between jobs is the case this exists for:
@@ -192,7 +192,10 @@ A self-hosted runner that keeps its cache between jobs is the case this exists f
   if: always()
   with:
     max-size: 20GB
+    min-free: 50GB
 ```
+
+`version: local` installs from the checkout instead of PyPI, which is how this repository tests its own action.
 
 ## Configuration
 

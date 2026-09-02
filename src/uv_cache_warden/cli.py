@@ -68,7 +68,8 @@ def build_parser() -> argparse.ArgumentParser:
     gc_parser.add_argument(
         "--max-size",
         metavar="SIZE",
-        help="Budget, e.g. 10GB, 4GiB or a byte count. Required (or set UVCW_MAX_SIZE).",
+        help="Cache size budget, e.g. 10GB, 4GiB or a byte count. Give this or --min-free, "
+        "or both.",
     )
     gc_parser.add_argument(
         "--min-free",

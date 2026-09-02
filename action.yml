@@ -8,7 +8,13 @@ branding:
 
 inputs:
   max-size:
-    description: Size budget, e.g. 10GB, 4GiB or a byte count. Required unless mode is report.
+    description: Cache size budget, e.g. 10GB, 4GiB or a byte count. Give this or min-free.
+    required: false
+    default: ""
+  min-free:
+    description: >-
+      Evict until at least this much space is free on the cache's filesystem, e.g. 20GB.
+      Combined with max-size, the tighter constraint wins.
     required: false
     default: ""
   min-age:
@@ -99,6 +105,7 @@ runs:
       env:
         UVCW_MODE: ${{ inputs.mode }}
         UVCW_MAX_SIZE: ${{ inputs.max-size }}
+        UVCW_MIN_FREE: ${{ inputs.min-free }}
         UVCW_MIN_AGE: ${{ inputs.min-age }}
         UVCW_KEEP: ${{ inputs.keep }}
         UVCW_TIMEOUT: ${{ inputs.timeout }}
@@ -115,8 +122,8 @@ runs:
           uvcw report --json-file "${result}"
           status=$?
         else
-          if [ -z "${UVCW_MAX_SIZE}" ]; then
-            echo "::error::max-size is required for mode '${UVCW_MODE}'"
+          if [ -z "${UVCW_MAX_SIZE}" ] && [ -z "${UVCW_MIN_FREE}" ]; then
+            echo "::error::mode '${UVCW_MODE}' needs max-size, min-free, or both"
             exit 1
           fi
           args=()

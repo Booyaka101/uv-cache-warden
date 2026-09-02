@@ -30,7 +30,7 @@ First release.
 - Colour on terminals, honouring `NO_COLOR`, `FORCE_COLOR` and `--no-color`, never applied to
   JSON or to a redirected stream. Windows consoles get VT processing enabled explicitly.
 - A `scanning cache... N entries` counter on stderr for scans that run longer than 1.5 seconds.
-- Composite GitHub Action with `gc`, `dry-run` and `report` modes, outputs for
+- Composite GitHub Action with `gc`, `dry-run` and `report` modes, a `min-free` input, outputs for
   `size-before`, `size-after`, `reclaimed`, `evicted`, `over-budget` and `json-path`, and a
   job summary table.
 - `UVCW_CACHE_DIR`, `UVCW_UV`, `UVCW_TIMEOUT`, `UVCW_MAX_SIZE`, `UVCW_MIN_AGE` and
