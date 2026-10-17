@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from .uvcmd import Uv, UvError
+from .uvcmd import Uv, UvFailed
 
 BUCKET_PREFIXES = frozenset(
     {
@@ -112,7 +112,7 @@ def discover_cache_dir(
     if uv is not None:
         try:
             resolved = uv.resolve_cache_dir()
-        except UvError:
+        except UvFailed:
             resolved = None
         if resolved is not None and str(resolved):
             return resolved, "uv cache dir"
@@ -128,8 +128,14 @@ def discover_cache_dir(
     )
 
 
-def load_layout(root: Path, source: str = "explicit") -> CacheLayout:
-    """Read the bucket inventory, refusing anything that is not recognisably a uv cache."""
+def load_layout(
+    root: Path, source: str = "explicit", *, allow_empty: bool = False
+) -> CacheLayout:
+    """Read the inventory. Only refreshes after native mutation may accept no buckets.
+
+    Initial discovery must retain the default guard. uv pruning can remove every recognized
+    bucket from an already-validated cache; its remaining files still count toward the budget.
+    """
     root = Path(root)
     if not root.exists():
         raise DiscoveryError("Cache directory does not exist: {}".format(root))
@@ -170,7 +176,7 @@ def load_layout(root: Path, source: str = "explicit") -> CacheLayout:
             bucket_names[prefix] = entry.name
             bucket_versions[prefix] = version
 
-    if not buckets:
+    if not buckets and not allow_empty:
         raise DiscoveryError(
             "{} contains no uv cache buckets (expected directories such as wheels-v6, "
             "sdists-v9 or archive-v0). Refusing to touch it.".format(root)

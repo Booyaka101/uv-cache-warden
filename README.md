@@ -2,24 +2,26 @@
 
 Keep [uv](https://docs.astral.sh/uv/)'s package cache under a size budget, with least-recently-used eviction. Dependency-free Python CLI (`uvcw`) plus a GitHub Action.
 
+Version 1.1.0 prunes first and only cleans packages when the cache is still over budget. Dry runs explain when their package projections depend on pruning.
+
 ![uvcw report](docs/report.png)
 
 ## The problem
 
-uv's cache grows and never shrinks on its own. [astral-sh/uv#5731](https://github.com/astral-sh/uv/issues/5731) has been open since August 2024 with 53 reactions and 31 comments; people report caches at 99 GB, 140 GB, 150 GB, 200 GiB and, at NVIDIA, "routinely exceeding 1TB+". uv ships `uv cache size`, `uv cache clean [PACKAGE]` and `uv cache prune`, and [none of them takes a size or age argument](https://docs.astral.sh/uv/reference/cli/). `uv cache prune` only removes entries it considers unused, which is why [#16551](https://github.com/astral-sh/uv/issues/16551) (multi-GB of CUDA wheels left behind after `uv tool uninstall`) was closed as not planned.
+uv's cache can grow well beyond the space available on a runner. [astral-sh/uv#5731](https://github.com/astral-sh/uv/issues/5731) has been open since August 2024. One [NVIDIA report](https://github.com/astral-sh/uv/issues/5731#issuecomment-4995906061) describes a cache "routinely exceeding 1TB+". These reports establish cache pressure, not warden performance. uv ships `uv cache size`, `uv cache clean [PACKAGE]` and `uv cache prune`, but no size budget.
 
-So the workaround people write by hand is: measure the cache, work out what to drop, call `uv cache clean` per package, prune. That is what this does, properly.
+Warden measures the cache, prunes first when over budget, then selects cold packages only if more space is needed. That avoids discarding reusable packages when native pruning alone is enough.
 
-The open upstream PR, [#20116](https://github.com/astral-sh/uv/pull/20116), makes `uv cache prune` run itself. That helps the long-lived server case, but prune only removes archives nothing links to, and the caches above are full of old versions that are still linked. A budget over referenced packages stays an external job.
+The upstream automatic-pruning proposal, [#20116](https://github.com/astral-sh/uv/pull/20116), is still open as of 2026-10-17. Native pruning also removes cached environments, temporary build environments and obsolete buckets. It does not evict old wheel versions that remain referenced. A budget over those packages stays an external job.
 
-uv's docs say it is [never safe to modify the cache directly](https://docs.astral.sh/uv/concepts/cache/). uv-cache-warden never unlinks a file. Every deletion is a `uv cache clean <package>` or one final `uv cache prune`, and it never passes uv's `--force`, so uv keeps blocking on the cache lock the way it is designed to.
+uv's docs say it is [never safe to modify the cache directly](https://docs.astral.sh/uv/concepts/cache/). uv-cache-warden never unlinks a file. Every deletion is a `uv cache clean <package>` or `uv cache prune`, without `--ci` or `--force`. uv retains control of mutations and locking.
 
 ## Install
 
 ```console
 $ uv tool install uv-cache-warden
 $ uvcw --version
-uvcw 1.0.3
+uvcw 1.1.0
 ```
 
 Or run it without installing:
@@ -73,7 +75,7 @@ TOTAL               307.5 MiB         (uv cache size: 307.5 MiB)
 
 ![uvcw gc](docs/gc.png)
 
-A dry run changes nothing and shows exactly what the real run would do:
+A dry run changes nothing. It projects package cleaning against the measured cache, without guessing what native pruning will reclaim:
 
 ```console
 $ uvcw gc --max-size 200MB --min-age 7d --dry-run
@@ -94,31 +96,31 @@ would evict (11 of 31 packages):
   numpy        58.2 MiB  11 days ago
 
 dry run: nothing was removed. Projected 307.5 MiB -> 150.8 MiB (budget 190.7 MiB).
+A real run prunes first; projected package evictions may disappear.
 ```
 
-Drop `--dry-run` and it evicts that list oldest-first, prunes once, then re-measures. The `Removed ...` and `Pruning cache at:` lines come from uv itself, streamed through as they happen so a wait on the cache lock is visible while it is still happening:
+Drop `--dry-run` and it runs `uv cache prune` first, re-measures, reloads the bucket layout and rescans attribution. If that meets the budget, no package is cleaned. Otherwise it cleans eligible packages oldest-first, re-measures for up to three rounds, and prunes once more only if at least one clean succeeded. The `Removed ...` and `Pruning cache at:` lines come from uv itself, streamed through so a wait on the cache lock is visible.
+
+This real uv 0.13.1 run used an isolated cache containing `idna==3.7` and `mdurl==0.1.2`, plus a 64 KiB obsolete-bucket test fixture. Selected output, also shown in the screenshot above:
 
 ```console
-$ uvcw gc --max-size 200MB --min-age 7d --fail-over
-Removed 57 files (648.0KiB)
-Removed 41 files (400.0KiB)
-...
-Removed 931 files (57.7MiB)
-Pruning cache at: .cache/uv
-No unused entries found
-cache /home/dev/.cache/uv  budget 190.7 MiB (--max-size)  currently 307.5 MiB
-  886.2 GiB free on this filesystem
-
-evicted (11 of 31 packages):
-  anyio       684.0 KiB  63 days ago
-  ...
-  numpy        58.2 MiB  11 days ago
-
-reclaimed 156.7 MiB; cache now 150.8 MiB (budget 190.7 MiB); evicted 11 packages
-under budget.
+$ uvcw gc --max-size 416768 --fail-over
+Pruning cache at: .venv/docs-run/cache
+Removed 1 file (64.0KiB)
+Budget met by initial prune; no packages cleaned.
+uv cache prune reclaimed 64.0 KiB; cache now 407.0 KiB.
 ```
 
-`reclaimed` is always measured with `uv cache size` afterwards, never projected. If a plan cannot reach the budget, the run says so and names the rule that held the bytes back, on a dry run too; `--fail-over` turns that into exit 2.
+Both packages remained cached and `uv pip install --offline --reinstall idna==3.7 mdurl==0.1.2` succeeded afterwards. This is a small compatibility check, not a throughput benchmark.
+
+`--json` and `--json-file` retain the existing fields and add:
+
+- `prune_steps`: attempted stages, each with `stage` (`initial` or `final`), `ok`, `detail`, and measured `size_after_bytes`. No attempted prune means `[]`.
+- `eviction_projection_conditional`: true for an over-budget dry run with pruning enabled. `size_after_bytes` remains the unchanged measurement; `evicted` and `over_budget` describe the package projection as before. `--no-prune` skips both stages and makes that projection unconditional on pruning.
+
+`pruned` means at least one prune succeeded. `prune_detail` aggregates stage-labelled failures. A returned nonzero prune exit can still have removed data, so warden re-measures and refreshes before selecting packages. A timeout or missing executable stops the run immediately with exit 1, without further mutation.
+
+`reclaimed` is always measured afterwards, never projected, using `uv cache size` or the filesystem-walk fallback when machine sizing is unavailable. If a plan cannot reach the budget, the run says so and names the rule that held the bytes back, on a dry run too; `--fail-over` turns that into exit 2.
 
 Already under budget is a no-op that exits 0:
 
@@ -138,7 +140,7 @@ cache /home/dev/.cache/uv  budget 150.8 MiB (--min-free)  currently 150.8 MiB
 Already under budget (150.8 MiB <= 150.8 MiB). Nothing to do.
 ```
 
-Give both and the tighter one wins; the header always names which constraint is binding. Even with nothing evictable, `gc` still runs `uv cache prune` once when the cache is over budget, because unreferenced archive bytes are reclaimable only there. That is the [#16551](https://github.com/astral-sh/uv/issues/16551) case.
+Give both and the tighter one wins; the header always names which constraint is binding. Even with nothing eligible for package cleaning, an over-budget real run prunes first. Initially under-budget runs, including equality, and dry runs never invoke either mutation.
 
 ### `uvcw doctor`
 
@@ -146,22 +148,10 @@ Give both and the tighter one wins; the header always names which constraint is 
 
 ```console
 $ uvcw doctor
-[ ok ] uv-cache-warden  1.0.3 on Python 3.14.4
-                        (Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.43)
-[ ok ] uv               uv 0.12.9 (x86_64-unknown-linux-gnu) at /home/dev/.local/bin/uv
-[ ok ] cache directory  /home/dev/.cache/uv (from uv cache dir)
-[ ok ] buckets          archive-v0, interpreter-v4, sdists-v9, simple-v24, wheels-v6
-[ ok ] bucket sizes     archive-v0 300.6 MiB  simple-v24 6.4 MiB  wheels-v6 380.0 KiB
-                        interpreter-v4 16.0 KiB  (root) 12.0 KiB  sdists-v9 4.0 KiB
-[ ok ] packages         31 attributed, 52.0 KiB unattributed, 0 B protected (osv, python)
-[ ok ] reconciliation   uvcw 307.5 MiB vs `uv cache size` 307.5 MiB (0.00%)
-[ ok ] hardlinks        0 of 6214 files are hardlinked, 0 B of it shared within the cache. Real
-                        footprint 307.5 MiB, uv counts 307.5 MiB.
-[ ok ] access times     access times track reads, so eviction order is true LRU; /dev/sdd mounted at
-                        / with relatime
-[ ok ] filesystem       886.2 GiB free of 1006.9 GiB where the cache lives
-[ ok ] sizing mode      st_blocks*512 with hardlink dedupe
+[ ok ] uv-cache-warden  1.1.0 on Python 3.14.4
 ```
+
+The screenshot shows the full check on the same isolated cache. It includes a timestamp-fallback warning because the filesystem is mounted with `noatime`.
 
 Two of those checks are worth knowing about before you trust a budget. **reconciliation** compares our total against `uv cache size`; they should agree exactly. **access times** says whether LRU is real here: on Windows, NTFS last-access updates are off by default, and plenty of Linux mounts are `noatime`, in which case eviction falls back to write order and `uvcw gc` says so in its header too.
 
@@ -184,8 +174,8 @@ Colour is on for terminals and off everywhere else. `NO_COLOR` disables it, `FOR
     keep: torch
 ```
 
-Inputs: `max-size`, `min-free`, `min-age`, `keep` (comma-separated), `mode` (`gc`, `dry-run` or `report`), `fail-over`, `cache-dir`, `timeout`, `version`, `summary`.
-Outputs: `size-before`, `size-after`, `reclaimed`, `evicted`, `over-budget`, `json-path`. It writes a job summary table by default.
+Inputs: `max-size`, `min-free`, `min-age`, `keep` (comma-separated), `mode` (`gc`, `dry-run` or `report`), `fail-over`, `no-prune`, `cache-dir`, `timeout`, `version`, `summary`. Set `no-prune: "true"` to skip both native pruning stages.
+Outputs: `size-before`, `size-after`, `reclaimed`, `evicted`, `over-budget`, `json-path`. Their names and types are unchanged. The default summary includes each prune stage and its measured result; dry-run summaries distinguish measured cache size from conditional package projections.
 
 A self-hosted runner that keeps its cache between jobs is the case this exists for:
 
@@ -213,11 +203,13 @@ Flags win; environment variables fill in defaults. There is no config file.
 | `UVCW_MIN_AGE` | `gc --min-age` |
 | `UVCW_KEEP` | `gc --keep`, comma-separated |
 
+Package names use uv's normalization: case is ignored and runs of `.`, `_` and `-` are equivalent. For example, `--keep zope.interface` also protects `zope-interface` from package cleaning. `--timeout` and `UVCW_TIMEOUT` apply to every command, including `doctor`, and must be finite positive seconds within the platform's timeout limit. Cancelling a run stops and reaps its uv child before returning; it cannot undo cache changes uv already made.
+
 Sizes accept `10GB`, `4GiB`, `500MiB` or a bare byte count; decimal units are powers of 1000 and binary units powers of 1024. Durations accept `s`, `m`, `h`, `d`, `w`.
 
 Exit codes: `0` success, `1` uvcw could not do its job (no `uv`, no cache, bad arguments), `2` still over budget and `--fail-over` was given. A package uv refuses to clean is logged, skipped and named in the summary; it does not change the exit code, so use `--fail-over` if you need CI to notice.
 
-The cache directory is found by running `uv cache dir`. If that fails, it falls back to `$UV_CACHE_DIR`, `$XDG_CACHE_HOME/uv`, `~/.cache/uv` and `%LOCALAPPDATA%\uv\cache`, in that order. A directory containing no recognisable uv bucket is refused outright, and so are your home directory and a filesystem root.
+The cache directory is found by running `uv cache dir`. An ordinary command failure falls back to `$UV_CACHE_DIR`, `$XDG_CACHE_HOME/uv`, `~/.cache/uv` and `%LOCALAPPDATA%\uv\cache`, in that order. A timeout or missing executable stops the command instead. Initial discovery refuses a directory containing no recognisable uv bucket, your home directory and a filesystem root. After uv mutates an already-validated cache, refreshing its inventory permits no remaining buckets; any remaining files still count toward the budget.
 
 ## How the numbers work
 
@@ -246,6 +238,8 @@ Package attribution comes from uv's own layout. `wheels-*/<kind>/<package>/`, `s
 - **LRU degrades to write order where access times are not tracked.** Windows disables NTFS last-access updates by default and Linux mounts are commonly `noatime`; `uvcw doctor` and `uvcw gc` both say so when it applies. `last_used` is `max(atime, mtime)`, so it degrades to first-write rather than to nonsense.
 - **Strict LRU can evict a lot to reach a little.** Eviction is oldest-first by design, so if the one package standing between you and the budget is also the newest, everything older goes first. The header says how many of your packages that is, and `--dry-run` shows the list before anything happens.
 - **Projection is not measurement.** Evicting a package whose bytes are hardlinked to bytes that survive frees less than expected, so `gc` re-measures with `uv cache size` and runs the analysis again (up to three rounds) if it is still over. The printed `reclaimed` figure is always measured, never projected.
+- **`--keep` and `--min-age` protect package cleaning, not native pruning.** uv may remove obsolete buckets, unused archives, cached environments and temporary build environments even when a related package is kept. Cached environments are recreated as needed. Use `--no-prune` to skip both native pruning stages.
+- **Cleaning can require downloads and rebuilds later.** Native pruning preserves referenced wheel artifacts but removes cached environments. Package cleaning removes all cached versions of that package. Hardlinked installations can retain physical disk blocks after cache entries disappear, so a cache-size reduction is not a guarantee of equal filesystem free space. Symlink-mode environments have uv's native cache-removal limitations.
 - **On a uv too old for `uv cache size`, totals come from our own walk** and there is nothing to cross-check them against. `doctor` warns when that happens.
 - No daemon, no config file, no telemetry.
 
@@ -255,11 +249,17 @@ Package attribution comes from uv's own layout. `wheels-*/<kind>/<package>/`, `s
 $ git clone https://github.com/Booyaka101/uv-cache-warden
 $ cd uv-cache-warden
 $ python -m pip install -e ".[dev]"
-$ python -m pytest -q                 # 139 unit tests, no network
-$ python -m pytest -q -m integration  # needs uv on PATH and PyPI access
+$ python -m pytest -q                 # unit and Action-output tests, no network
+$ python -m pytest -q -m integration  # uv 0.13.1 on PATH and PyPI access
+$ python -m build
+$ python -m twine check dist/*
 ```
 
 The unit tests build synthetic cache trees matching `crates/uv-cache/src/lib.rs` and use a recording fake in place of the uv wrapper. The fake lives in `tests/conftest.py` and nothing under `src/` imports it.
+
+Integration checks install tiny real packages into isolated caches, exercise native obsolete-bucket pruning, preserve packages for offline reinstall, and run the composite Action's actual shell steps on POSIX. Subprocess failures fail tests rather than turning them into skips. CI covers Linux, macOS and Windows; Windows skips the POSIX-only Action-shell and symlink-validation cases.
+
+Releases go through a GitHub PR and require owner approval and green CI on the exact release commit. Publish the PyPI artifacts and verify registry availability before creating the versioned release and updating the floating Action `v1` tag.
 
 [`docs/upstream-notes.md`](docs/upstream-notes.md) records every uv internal this tool depends on, with the verbatim source and a link, so it can be rechecked when uv changes.
 

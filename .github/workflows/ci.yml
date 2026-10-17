@@ -33,6 +33,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: false
+          version: "0.13.1"
 
       - uses: actions/setup-python@v7
         with:
@@ -79,6 +80,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: false
+          version: "0.13.1"
 
       - name: Warm the cache
         run: |
@@ -127,6 +129,7 @@ jobs:
           python -m venv /tmp/clean
           /tmp/clean/bin/python -m pip install --disable-pip-version-check dist/*.whl
           /tmp/clean/bin/uvcw --version
+          /tmp/clean/bin/uv-cache-warden --version
       - uses: actions/upload-artifact@v7
         with:
           name: dist

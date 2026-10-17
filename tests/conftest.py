@@ -20,11 +20,12 @@ class FakeUv:
     fall back to a fake.
     """
 
-    def __init__(self, cache_dir=None, size=None, clean_fails=()):
+    def __init__(self, cache_dir=None, size=None, clean_fails=(), prune_effect=None):
         self.cache_dir = cache_dir
         self.calls = []
         self._size = size
         self._clean_fails = set(clean_fails)
+        self._prune_effect = prune_effect
         self.timeout = 900.0
         self.echo = False
         self.executable = "fake-uv"
@@ -59,6 +60,10 @@ class FakeUv:
 
     def cache_prune(self, ci=False):
         self._record("cache", "prune")
+        if self._prune_effect is not None:
+            outcome = self._prune_effect()
+            if outcome is not None:
+                return outcome
         return UvResult(["uv", "cache", "prune"], 0, "No unused entries found\n", "")
 
 
@@ -101,6 +106,15 @@ def write_file(path: Path, size: int, mtime: float = None) -> Path:
     if mtime is not None:
         os.utime(str(path), (mtime, mtime))
     return path
+
+
+def snapshot_tree(root):
+    """Compare contents and write times, not access times changed by reading the tree."""
+    entries = {}
+    for path in root.rglob("*"):
+        content = os.readlink(path) if path.is_symlink() else path.read_bytes() if path.is_file() else None
+        entries[str(path.relative_to(root))] = (content, path.lstat().st_mtime_ns)
+    return entries
 
 
 def set_times(root: Path, when: float) -> None:

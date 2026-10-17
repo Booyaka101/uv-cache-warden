@@ -20,7 +20,7 @@ from .discovery import (
 )
 from .sizing import Counter, Usage, format_age, format_size, walk
 from .style import LEFT, RIGHT, Style, share, table
-from .uvcmd import Uv, UvError
+from .uvcmd import Uv, UvFailed
 
 ROOT_BUCKET = "(root)"
 """Where loose entries such as CACHEDIR.TAG land in the per-bucket inventory."""
@@ -163,11 +163,11 @@ def scan(
         result.uv_consulted = True
         try:
             result.uv_cache_size = uv.cache_size()
-        except UvError:
+        except UvFailed:
             result.uv_cache_size = None
         try:
             result.uv_version = uv.version()
-        except UvError:
+        except UvFailed:
             result.uv_version = None
 
     return result

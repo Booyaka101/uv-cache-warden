@@ -38,7 +38,12 @@ _MAX_LINK_BYTES = 512
 
 def is_package_name(name: str) -> bool:
     """Reject anything `uv cache clean` would reject, before we hand it over."""
-    return bool(PACKAGE_NAME_RE.match(name))
+    return bool(PACKAGE_NAME_RE.fullmatch(name))
+
+
+def normalize_name(name: str) -> str:
+    """Match uv's package-name equivalence without a packaging dependency."""
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 @dataclass(frozen=True)
@@ -50,8 +55,8 @@ class LinkRef:
 
 @dataclass
 class Attribution:
-    archive_owners: Dict[str, Set[str]] = field(default_factory=dict)
-    """Archive id -> the package names that reference it."""
+    archive_owners: Dict[str, Set[Optional[str]]] = field(default_factory=dict)
+    """Archive id -> referrer package names; None preserves an unattributed reference."""
     links: List[LinkRef] = field(default_factory=list)
     package_versions: Dict[str, Set[str]] = field(default_factory=dict)
     unresolved_links: int = 0
@@ -138,21 +143,17 @@ def read_link(path: Path, archive_version: Optional[int] = None) -> Optional[str
         except OSError:
             return None
         resolved = Path(os.path.normpath(os.path.join(str(path.parent), target)))
-        parts = resolved.parts
-        for index, part in enumerate(parts):
-            if part.startswith("archive-v") and index + 1 < len(parts):
-                return parts[index + 1]
+        content = "{}/{}".format(resolved.parent.name, resolved.name)
+    elif not stat.S_ISREG(st.st_mode) or st.st_size > _MAX_LINK_BYTES:
         return None
-
-    if not stat.S_ISREG(st.st_mode) or st.st_size > _MAX_LINK_BYTES:
-        return None
-    try:
-        with open(str(path), "rb") as handle:
-            content = handle.read(_MAX_LINK_BYTES + 1).decode("utf-8").strip()
-    except (OSError, UnicodeDecodeError):
-        return None
-    match = LINK_CONTENT_RE.match(content)
-    if match is None:
+    else:
+        try:
+            with open(str(path), "rb") as handle:
+                content = handle.read(_MAX_LINK_BYTES + 1).decode("utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            return None
+    match = LINK_CONTENT_RE.fullmatch(content)
+    if match is None or match.group(2) in (".", ".."):
         return None
     if archive_version is not None and int(match.group(1)) != archive_version:
         return None
@@ -186,10 +187,7 @@ def build(layout: CacheLayout) -> Attribution:
                 attribution.unresolved_links += 1
                 continue
             attribution.links.append(LinkRef(path, archive_id, package))
-            if package is not None:
-                attribution.archive_owners.setdefault(archive_id, set()).add(package)
-            else:
-                attribution.archive_owners.setdefault(archive_id, set())
+            attribution.archive_owners.setdefault(archive_id, set()).add(package)
 
     return attribution
 
@@ -209,7 +207,7 @@ def _is_sidecar(name: str) -> bool:
 
 
 def _valid(name: str) -> Optional[str]:
-    return name if is_package_name(name) else None
+    return normalize_name(name) if is_package_name(name) else None
 
 
 def _strip_rkyv(name: str) -> Optional[str]:

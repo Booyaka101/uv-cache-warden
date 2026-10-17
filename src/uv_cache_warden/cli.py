@@ -15,7 +15,7 @@ from . import __version__, doctor, gc as gc_mod, report as report_mod
 from .discovery import CacheLayout, DiscoveryError, discover_cache_dir, load_layout
 from .sizing import parse_duration, parse_size
 from .style import Progress, Style
-from .uvcmd import DEFAULT_TIMEOUT, Uv, UvError, UvNotFound
+from .uvcmd import DEFAULT_TIMEOUT, Uv, UvError, UvFailed, UvNotFound, validate_timeout
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -80,14 +80,14 @@ def build_parser() -> argparse.ArgumentParser:
     gc_parser.add_argument(
         "--min-age",
         metavar="DURATION",
-        help="Never evict a package used more recently than this, e.g. 7d, 12h.",
+        help="Never clean a package used more recently than this, e.g. 7d, 12h. Does not restrict native pruning.",
     )
     gc_parser.add_argument(
         "--keep",
         action="append",
         default=[],
         metavar="PKG",
-        help="Never evict this package. Repeatable.",
+        help="Never clean this package (normalized name). Repeatable. Does not restrict native pruning.",
     )
     gc_parser.add_argument(
         "--dry-run",
@@ -104,7 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-prune",
         dest="prune",
         action="store_false",
-        help="Skip the final `uv cache prune`.",
+        help="Skip both initial and final `uv cache prune` stages.",
     )
     gc_parser.set_defaults(handler=_cmd_gc, prune=True)
 
@@ -186,11 +186,11 @@ def _positive_int(text: str) -> int:
 
 def _timeout(args: argparse.Namespace) -> float:
     if args.timeout is not None:
-        return args.timeout
+        return validate_timeout(args.timeout)
     raw = os.environ.get("UVCW_TIMEOUT")
     if raw:
         try:
-            return float(raw)
+            return validate_timeout(float(raw))
         except ValueError:
             raise DiscoveryError("UVCW_TIMEOUT must be a number of seconds, got {!r}".format(raw))
     return DEFAULT_TIMEOUT
@@ -279,7 +279,7 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     uv, layout = _open(args, echo=not args.json)
     try:
         current = uv.cache_size()
-    except UvError:
+    except UvFailed:
         current = None
     if current is None:
         from .sizing import measure_tree
@@ -314,7 +314,9 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     override = Path(args.cache_dir) if args.cache_dir else None
     progress = _progress(args)
     try:
-        diagnosis = doctor.diagnose(cache_dir=override, uv_path=args.uv, progress=progress)
+        diagnosis = doctor.diagnose(
+            cache_dir=override, uv_path=args.uv, progress=progress, timeout=_timeout(args)
+        )
     finally:
         progress.done()
     _emit(args, diagnosis.as_json(), doctor.render(diagnosis, style=style))

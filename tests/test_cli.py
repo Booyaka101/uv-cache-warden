@@ -8,11 +8,12 @@ from pathlib import Path
 import pytest
 
 from uv_cache_warden import __version__, cli
+from uv_cache_warden.uvcmd import UvNotFound, UvTimeout
 
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
-    for name in ("UVCW_CACHE_DIR", "UVCW_MAX_SIZE", "UVCW_MIN_AGE", "UVCW_KEEP", "UVCW_TIMEOUT"):
+    for name in ("UVCW_CACHE_DIR", "UVCW_MAX_SIZE", "UVCW_MIN_FREE", "UVCW_MIN_AGE", "UVCW_KEEP", "UVCW_TIMEOUT"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -182,3 +183,79 @@ def test_doctor_json_file(tmp_path, cache, monkeypatch):
     target = tmp_path / "doctor.json"
     cli.main(["doctor", "--json-file", str(target), "--cache-dir", str(cache.root)])
     assert "checks" in json.loads(target.read_text())
+
+
+@pytest.mark.parametrize("error", [UvTimeout(["uv"], 1), UvNotFound("uv disappeared")])
+@pytest.mark.parametrize("command,point", [("gc", "resolve_cache_dir"), ("gc", "cache_size"), ("gc", "cache_prune"), ("report", "version")])
+def test_fatal_uv_errors_are_clear_and_do_not_mutate(cache, monkeypatch, capsys, error, command, point):
+    from conftest import FakeUv
+
+    cache.add_package("rich")
+    uv = FakeUv(cache.root, size=100)
+
+    def fail(*args, **kwargs):
+        raise error
+
+    setattr(uv, point, fail)
+    monkeypatch.setattr(cli.Uv, "discover", lambda *args, **kwargs: uv)
+    args = [command, "--cache-dir", str(cache.root)]
+    if point == "resolve_cache_dir":
+        args = [command]
+    if command == "gc":
+        args += ["--max-size", "1"]
+    assert cli.main(args) == cli.EXIT_ERROR
+    assert uv.mutating_calls == []
+    output = capsys.readouterr()
+    assert "uvcw: error:" in output.err and str(error) in output.err
+    assert "Traceback" not in output.err
+
+
+def test_prune_only_cli_json_and_fail_over(cache, monkeypatch, capsys):
+    from conftest import FakeUv
+
+    cache.add_package("cold")
+    size = [12884901888]
+    uv = FakeUv(cache.root, size=lambda: size[0], prune_effect=lambda: size.__setitem__(0, 9663676416))
+    monkeypatch.setattr(cli.Uv, "discover", lambda *args, **kwargs: uv)
+    assert cli.main(["gc", "--cache-dir", str(cache.root), "--max-size", "10GiB", "--json", "--fail-over"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["reclaimed_bytes"] == 3221225472
+    assert data["evicted_count"] == 0 and data["package_count"] == 1
+    assert not data["over_budget"]
+    assert len(data["prune_steps"]) == 1
+
+
+@pytest.mark.parametrize("source", ["flag", "environment"])
+@pytest.mark.parametrize("command", ["report", "gc", "doctor"])
+def test_all_commands_honour_timeout(cache, monkeypatch, source, command):
+    from conftest import FakeUv
+
+    cache.add_package("rich")
+    received = []
+
+    def discover(*args, **kwargs):
+        received.append(kwargs["timeout"])
+        return FakeUv(cache.root, size=100)
+
+    monkeypatch.setattr(cli.Uv, "discover", discover)
+    args = [command, "--cache-dir", str(cache.root)]
+    if command == "gc":
+        args += ["--max-size", "100"]
+    if source == "flag":
+        args += ["--timeout", "1.25"]
+    else:
+        monkeypatch.setenv("UVCW_TIMEOUT", "1.25")
+    assert cli.main(args) == 0
+    assert received == [1.25]
+
+
+@pytest.mark.parametrize("command", ["report", "gc", "doctor"])
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "1e100"])
+def test_invalid_timeout_is_a_clear_error_before_uv(cache, monkeypatch, capsys, command, value):
+    monkeypatch.setenv("UVCW_TIMEOUT", value)
+    monkeypatch.setattr(cli.Uv, "discover", lambda *a, **kw: pytest.fail("must validate before uv discovery"))
+    args = [command, "--cache-dir", str(cache.root)]
+    if command == "gc":
+        args += ["--max-size", "1"]
+    assert cli.main(args) == cli.EXIT_ERROR
+    assert "Timeout" in capsys.readouterr().err

@@ -20,10 +20,12 @@ Three totals come out of a walk, and they are genuinely different numbers:
     Unix, ``len()`` on Windows.
 """
 
+import math
 import os
 import re
 import stat
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 from typing import Container, Iterator, List, Optional, Set, Tuple
 
@@ -84,9 +86,10 @@ def parse_size(text: str) -> int:
             "TB, TiB.".format(text, match.group("unit"))
         )
     value = float(match.group("value")) * _SIZE_UNITS[unit]
-    if value < 0:
-        raise ValueError("Size must not be negative: {!r}".format(text))
-    return int(value)
+    if not math.isfinite(value):
+        raise ValueError("Size is too large: {!r}".format(text))
+    # Float is only a range check. Budget byte counts must not round above 2**53.
+    return int(Fraction(match.group("value")) * _SIZE_UNITS[unit])
 
 
 def parse_duration(text: str) -> float:
@@ -105,7 +108,10 @@ def parse_duration(text: str) -> float:
                 text, match.group("unit")
             )
         )
-    return float(match.group("value")) * _DURATION_UNITS[unit]
+    value = float(match.group("value")) * _DURATION_UNITS[unit]
+    if not math.isfinite(value):
+        raise ValueError("Duration is too large: {!r}".format(text))
+    return value
 
 
 def format_size(num_bytes: int) -> str:
