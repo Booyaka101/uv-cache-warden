@@ -6,6 +6,7 @@ safe to modify the cache directly. `--force` is deliberately never sent: `uv cac
 behaviour.
 """
 
+import math
 import os
 import re
 import shutil
@@ -53,6 +54,14 @@ class UvFailed(UvError):
         super().__init__("`{}` exited {}: {}".format(" ".join(args), returncode, tail))
 
 
+def validate_timeout(timeout: float) -> float:
+    if not math.isfinite(timeout) or not 0 < timeout <= threading.TIMEOUT_MAX:
+        raise UvError(
+            "Timeout must be finite, positive and at most {:g} seconds.".format(threading.TIMEOUT_MAX)
+        )
+    return timeout
+
+
 @dataclass(frozen=True)
 class UvResult:
     args: List[str]
@@ -81,6 +90,9 @@ class Uv:
     """Stream uv's stderr through to ours so its "waiting for other uv processes" shows live."""
 
     calls: List[List[str]] = field(default_factory=list, repr=False)
+
+    def __post_init__(self) -> None:
+        self.timeout = validate_timeout(self.timeout)
 
     @classmethod
     def discover(
@@ -140,10 +152,12 @@ class Uv:
         try:
             proc.wait(timeout=self.timeout)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
             raise UvTimeout(argv, self.timeout)
         finally:
+            # Cancellation must not leave our cache-mutating child running after CLI exit.
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
             for pump in pumps:
                 pump.join(timeout=5.0)
 

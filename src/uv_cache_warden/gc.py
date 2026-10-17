@@ -1,9 +1,7 @@
 """LRU eviction down to a byte budget, performed entirely through uv subcommands.
 
-The loop is: sort packages oldest-first, drop the ones a rule protects, and hand names to
-`uv cache clean` until the projected total falls under the budget. Then a single
-`uv cache prune` sweeps whatever is left unreferenced, and `uv cache size` says what really
-happened.
+Prune first, then select packages oldest-first from refreshed attribution if still over budget.
+After successful package cleans, a final prune sweeps newly unreferenced entries.
 
 Projection and reality can disagree, because a package's bytes may be hardlinked to bytes that
 survive. So when the measured size is still over budget and eligible packages remain, the whole
@@ -17,12 +15,12 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import report as report_mod
-from .attribute import is_package_name
-from .discovery import CacheLayout, DiscoveryError
+from .attribute import is_package_name, normalize_name
+from .discovery import CacheLayout, DiscoveryError, load_layout
 from .report import Scan
 from .sizing import format_age, format_size, measure_tree
 from .style import LEFT, RIGHT, Style, table
-from .uvcmd import Uv, UvError
+from .uvcmd import Uv, UvFailed
 
 MAX_ROUNDS = 3
 
@@ -107,6 +105,8 @@ class Result:
     plans: List[Plan] = field(default_factory=list)
     pruned: bool = False
     prune_detail: str = ""
+    prune_steps: List[dict] = field(default_factory=list)
+    eviction_projection_conditional: bool = False
     atime_reliable: bool = True
     bound_by: str = BOUND_MAX_SIZE
     free_before: Optional[int] = None
@@ -173,9 +173,11 @@ def plan(
     min_age: float = 0.0,
     keep: Sequence[str] = (),
     size_before: Optional[int] = None,
+    excluded: Sequence[str] = (),
 ) -> Plan:
     """Decide which packages to evict, oldest first, stopping as soon as the budget is met."""
-    keep_set = {name.lower() for name in keep}
+    keep_set = {normalize_name(name) for name in keep}
+    excluded_set = {normalize_name(name) for name in excluded}
     current = size_before if size_before is not None else scan.total.disk_bytes
     result = Plan(
         budget=budget,
@@ -190,8 +192,11 @@ def plan(
 
     projected = current
     for package in scan.by_last_used():
+        normalized = normalize_name(package.name)
+        if normalized in excluded_set:
+            continue
         age = scan.age_of(package)
-        if package.name.lower() in keep_set:
+        if normalized in keep_set:
             result.skipped.append(Skipped(package.name, package.usage.disk_bytes, SKIP_KEEP))
             continue
         if not is_package_name(package.name):
@@ -210,6 +215,7 @@ def plan(
                 versions=package.versions,
             )
         )
+        excluded_set.add(normalized)
         projected -= package.usage.disk_bytes
 
     result.projected = projected
@@ -227,7 +233,7 @@ def run(
     progress: Optional[Callable[[int], None]] = None,
     bound_by: str = BOUND_MAX_SIZE,
 ) -> Result:
-    """Scan, evict, prune, re-measure. `dry_run` invokes no mutating uv command at all."""
+    """Prune before selecting packages. `dry_run` invokes no mutating uv command."""
     started = time.time()
     scan = report_mod.scan(layout, uv, progress=progress)
     size_before = scan.uv_cache_size if scan.uv_cache_size is not None else scan.total.disk_bytes
@@ -241,6 +247,7 @@ def run(
         atime_reliable=scan.atime_reliable,
         bound_by=bound_by,
         free_before=_free(layout.root),
+        eviction_projection_conditional=dry_run and prune and size_before > budget,
     )
 
     initially_over = size_before > budget
@@ -248,22 +255,29 @@ def run(
     current_size = size_before
     evicted_names: Dict[str, None] = {}
 
+    if initially_over and not dry_run and prune:
+        _prune(result, "initial", uv, layout)
+        current_scan = None
+        current_size = result.size_after
+
     for round_index in range(MAX_ROUNDS):
         if current_scan is None:
+            layout = load_layout(layout.root, source=layout.source, allow_empty=True)
             current_scan = report_mod.scan(layout, uv, progress=progress)
             current_size = (
                 current_scan.uv_cache_size
                 if current_scan.uv_cache_size is not None
                 else current_scan.total.disk_bytes
             )
+            result.size_after = current_size
         step = plan(
             current_scan,
             budget,
             min_age=min_age,
             keep=keep,
             size_before=current_size,
+            excluded=tuple(evicted_names),
         )
-        step.evict = [item for item in step.evict if item.name not in evicted_names]
         result.plans.append(step)
         result.rounds = round_index + 1
         if round_index == 0:
@@ -298,20 +312,30 @@ def run(
         if measured <= budget:
             break
 
-    # Prune even when nothing was evictable: unattributed archive bytes are reclaimable only
-    # here, and that is exactly the case astral-sh/uv#16551 describes.
-    if not dry_run and prune and initially_over:
-        outcome = uv.cache_prune()
-        result.pruned = outcome.ok
-        if not outcome.ok:
-            result.prune_detail = _first_error(outcome.stderr) or "exit {}".format(
-                outcome.returncode
-            )
-        result.size_after = _measure(uv, layout)
+    if not dry_run and prune and result.succeeded:
+        _prune(result, "final", uv, layout)
 
     result.free_after = _free(layout.root)
     result.duration = time.time() - started
     return result
+
+
+def _prune(result: Result, stage: str, uv: Uv, layout: CacheLayout) -> None:
+    outcome = uv.cache_prune()
+    detail = ""
+    if not outcome.ok:
+        detail = _first_error(outcome.stderr) or "exit {}".format(outcome.returncode)
+        failure = "{}: {}".format(stage, detail)
+        result.prune_detail = "; ".join(filter(None, (result.prune_detail, failure)))
+    result.pruned = result.pruned or outcome.ok
+    # A nonzero exit can follow partial mutation. Always measure before doing anything else.
+    result.size_after = _measure(uv, layout)
+    result.prune_steps.append({
+        "stage": stage,
+        "ok": outcome.ok,
+        "detail": detail,
+        "size_after_bytes": result.size_after,
+    })
 
 
 def _free(root: Path) -> Optional[int]:
@@ -324,7 +348,7 @@ def _free(root: Path) -> Optional[int]:
 def _measure(uv: Uv, layout: CacheLayout) -> int:
     try:
         size = uv.cache_size()
-    except UvError:
+    except UvFailed:
         size = None
     if size is not None:
         return size
@@ -356,8 +380,7 @@ def render(result: Result, style: Optional[Style] = None) -> str:
             style.dim("  {} free on this filesystem".format(format_size(result.free_before)))
         )
 
-    first = result.plans[0] if result.plans else None
-    if first is not None and not first.over_budget:
+    if result.size_before <= result.budget:
         lines.append(
             style.paint(
                 "Already under budget ({} <= {}). Nothing to do.".format(
@@ -377,7 +400,10 @@ def render(result: Result, style: Optional[Style] = None) -> str:
         )
 
     if not result.evicted:
-        lines.append("No package is eligible for eviction.")
+        if not result.over_budget and result.prune_steps:
+            lines.append("Budget met by initial prune; no packages cleaned.")
+        else:
+            lines.append("No package is eligible for eviction.")
         if result.pruned and result.reclaimed:
             lines.append(
                 "uv cache prune reclaimed {}; cache now {}.".format(
@@ -427,6 +453,8 @@ def _outcome(result: Result, style: Style) -> List[str]:
                 format_size(result.budget),
             )
         )
+        if result.eviction_projection_conditional:
+            lines.append("A real run prunes first; projected package evictions may disappear.")
     else:
         if result.prune_detail:
             lines.append(style.paint("uv cache prune failed: " + result.prune_detail, "red"))
@@ -508,6 +536,8 @@ def to_json(result: Result) -> dict:
         "rounds": result.rounds,
         "pruned": result.pruned,
         "prune_detail": result.prune_detail,
+        "prune_steps": result.prune_steps,
+        "eviction_projection_conditional": result.eviction_projection_conditional,
         "evicted": [item.as_json() for item in result.evicted],
         "evicted_count": result.succeeded,
         "package_count": result.plans[0].package_count if result.plans else 0,

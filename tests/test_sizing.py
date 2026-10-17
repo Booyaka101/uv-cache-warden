@@ -18,13 +18,15 @@ from conftest import write_file
         ("2.5GiB", int(2.5 * 2**30)),
         ("500 MiB", 500 * 2**20),
         ("4tb", 4 * 10**12),
+        ("9007199254740993", 9007199254740993),
+        ("9007199254740993.125KiB", 9223372036854776960),
     ],
 )
 def test_parse_size(text, expected):
     assert sizing.parse_size(text) == expected
 
 
-@pytest.mark.parametrize("text", ["", "GB", "10 parsecs", "-5GB", "1.2.3GB"])
+@pytest.mark.parametrize("text", ["", "GB", "10 parsecs", "-5GB", "1.2.3GB", "9" * 400 + "GB"])
 def test_parse_size_rejects_nonsense(text):
     with pytest.raises(ValueError):
         sizing.parse_size(text)
@@ -37,7 +39,7 @@ def test_parse_duration(text, expected):
     assert sizing.parse_duration(text) == expected
 
 
-@pytest.mark.parametrize("text", ["7", "", "7 fortnights", "d"])
+@pytest.mark.parametrize("text", ["7", "", "7 fortnights", "d", "9" * 400 + "d"])
 def test_parse_duration_rejects_nonsense(text):
     with pytest.raises(ValueError):
         sizing.parse_duration(text)

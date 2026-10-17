@@ -1,5 +1,5 @@
 name: uv Cache Warden
-description: Keep the uv cache under a size budget by evicting least-recently-used packages through uv itself.
+description: Prune the uv cache first, then clean least-recently-used packages if still over budget, through uv itself.
 author: Christo Bosch
 
 branding:
@@ -18,11 +18,11 @@ inputs:
     required: false
     default: ""
   min-age:
-    description: Never evict a package used more recently than this, e.g. 7d or 12h.
+    description: Never clean a package used more recently than this, e.g. 7d or 12h. Does not restrict native pruning.
     required: false
     default: ""
   keep:
-    description: Comma-separated package names to never evict.
+    description: Comma-separated package names to never clean. Does not restrict native uv pruning.
     required: false
     default: ""
   mode:
@@ -31,6 +31,10 @@ inputs:
     default: gc
   fail-over:
     description: Fail the step if the cache is still over budget afterwards.
+    required: false
+    default: "false"
+  no-prune:
+    description: Skip both native prune steps. Keep and min-age still protect package cleans.
     required: false
     default: "false"
   cache-dir:
@@ -46,7 +50,7 @@ inputs:
       Version of uv-cache-warden to install. Empty installs the latest release; "local"
       installs from this checkout, which is how the repository tests its own action.
     required: false
-    default: "1.0.3"
+    default: "1.1.0"
   summary:
     description: Write a job summary.
     required: false
@@ -110,17 +114,20 @@ runs:
         UVCW_KEEP: ${{ inputs.keep }}
         UVCW_TIMEOUT: ${{ inputs.timeout }}
         UVCW_FAIL_OVER: ${{ inputs.fail-over }}
+        UVCW_NO_PRUNE: ${{ inputs.no-prune }}
         UVCW_CACHE_DIR: ${{ inputs.cache-dir }}
         UVCW_SUMMARY: ${{ inputs.summary }}
       run: |
-        set -uo pipefail
+        set -euo pipefail
         # An empty UVCW_CACHE_DIR would otherwise override discovery with the empty string.
         if [ -z "${UVCW_CACHE_DIR}" ]; then unset UVCW_CACHE_DIR; fi
         result="${RUNNER_TEMP}/uvcw-result.json"
+        # A failed invocation must not report a previous step's result as its own.
+        rm -f -- "${result}"
+        status=0
 
         if [ "${UVCW_MODE}" = "report" ]; then
-          uvcw report --json-file "${result}"
-          status=$?
+          uvcw report --json-file "${result}" || status=$?
         else
           if [ -z "${UVCW_MAX_SIZE}" ] && [ -z "${UVCW_MIN_FREE}" ]; then
             echo "::error::mode '${UVCW_MODE}' needs max-size, min-free, or both"
@@ -133,12 +140,13 @@ runs:
             *) echo "::error::unknown mode '${UVCW_MODE}' (expected gc, dry-run or report)"; exit 1 ;;
           esac
           if [ "${UVCW_FAIL_OVER}" = "true" ]; then args+=(--fail-over); fi
-          uvcw gc --json-file "${result}" "${args[@]}"
-          status=$?
+          if [ "${UVCW_NO_PRUNE:-false}" = "true" ]; then args+=(--no-prune); fi
+          uvcw gc --json-file "${result}" "${args[@]}" || status=$?
         fi
 
         if [ ! -s "${result}" ]; then
           echo "::error::uvcw produced no result file; see the log above"
+          if [ "${status}" -eq 0 ]; then status=1; fi
           exit "${status}"
         fi
 
@@ -179,6 +187,15 @@ runs:
                 handle.write("| reclaimed | {} |\n".format(gib(reclaimed)))
                 handle.write("| packages evicted | {} |\n".format(evicted))
                 handle.write("| over budget | {} |\n".format(over))
+                for step in data.get("prune_steps", []):
+                    handle.write("| {} prune | {}; cache after {} |\n".format(
+                        step["stage"], "ok" if step["ok"] else "failed", gib(step["size_after_bytes"])))
+                if data.get("eviction_projection_conditional"):
+                    handle.write("\nDry run: package evictions are conditional. A real run prunes first.\n")
+                if data.get("dry_run"):
+                    handle.write("\nCache after is measured and unchanged; packages evicted is the projection.\n")
+                elif data.get("prune_steps") and not evicted and not over:
+                    handle.write("\nBudget met by initial prune; no packages cleaned.\n")
         PY
 
         exit $status

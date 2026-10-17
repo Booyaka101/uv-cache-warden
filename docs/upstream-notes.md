@@ -7,6 +7,38 @@ changes and the numbers stop agreeing, start here.
 
 Checked 2026-09-02 against `uv 0.12.9 (9f9286029 2026-09-01 x86_64-pc-windows-msvc)`.
 
+Prune-first upgrade rechecked 2026-10-17 against real uv 0.13.1 on Windows and Linux.
+The older excerpts below retain their original version context. Current buckets observed:
+`wheels-v7`, `sdists-v10`, `simple-v26`, `archive-v0`, `interpreter-v4`.
+
+## Prune-first sequencing in 1.1.0
+
+[uv 0.12.24](https://github.com/astral-sh/uv/releases/tag/0.12.24), released 2026-10-08,
+added removal of orphaned temporary build environments. The
+[0.13.1 implementation](https://raw.githubusercontent.com/astral-sh/uv/0.13.1/crates/uv-cache/src/lib.rs)
+includes these comments:
+
+> Second, remove all cached environments.
+> Third, remove all temporary build environments.
+> Fifth, remove any unused archives (by searching for archives that are not symlinked).
+
+It also removes obsolete top-level buckets. That is why GC now prunes before projecting
+package cleans, re-measures even on a nonzero returned exit, and reloads the bucket layout
+before rescanning. A final prune is useful after successful cleans, but is unnecessary after
+a prune-only result. No format-writing or direct file removal was added to warden.
+
+[Cache safety](https://docs.astral.sh/uv/concepts/cache/) still forbids direct modification.
+Cached environments are recreated as needed. `--keep` cannot constrain native prune removals.
+The [setup-uv v10.3.0 save step](https://raw.githubusercontent.com/astral-sh/setup-uv/v10.3.0/src/save-cache.ts)
+instead uses `cache prune --ci` and may add `--force`; warden uses neither flag.
+
+The required demand references were re-fetched: [#5731](https://api.github.com/repos/astral-sh/uv/issues/5731)
+was open with 34 comments and 56 thumbs-up, not 56 verified affected users. The
+[weekly-upgrade](https://api.github.com/repos/astral-sh/uv/issues/comments/2564832422) and
+[NVIDIA](https://api.github.com/repos/astral-sh/uv/issues/comments/4995906061) comments support cache
+pressure, not measured warden performance. [#20116](https://api.github.com/repos/astral-sh/uv/pulls/20116)
+was open and unmerged, and explicitly does not evict referenced old wheel versions.
+
 ## 1. `uv` has no size or age flag, https://docs.astral.sh/uv/reference/cli/
 
 `uv cache clean`, `uv cache prune`, `uv cache size` and `uv cache dir` each accept only the

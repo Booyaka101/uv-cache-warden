@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from uv_cache_warden import attribute
@@ -22,6 +24,7 @@ from conftest import link_to_archive, write_file
         ("simple", ["index", "abc", "rich.rkyv"], "rich"),
         ("simple", ["pypi", "rich.lock"], None),
         ("archive", ["someid"], None),
+        ("wheels", ["pypi", "Zope_Interface", "1.0-py3-none-any"], "zope-interface"),
     ],
 )
 def test_package_from_parts(bucket, parts, expected):
@@ -63,6 +66,37 @@ def test_archive_shared_by_two_packages_has_no_sole_owner(cache):
 
     assert result.archive_owners["shared"] == {"alpha", "beta"}
     assert result.sole_owner("shared") is None
+
+
+def test_unknown_referrer_prevents_sole_ownership(cache):
+    from uv_cache_warden import report
+
+    cache.add_package("alpha", archive_id="shared", size=100_000)
+    link_to_archive(cache.root / "sdists-v9" / "git" / "repo" / "revision", "shared")
+    result = report.scan(cache.layout())
+    assert result.attribution.sole_owner("shared") is None
+    assert result.packages["alpha"].usage.disk_bytes < 100_000
+    assert result.unreferenced_archives == 0
+    assert result.shared_archives == 1
+
+
+def test_package_aliases_share_ownership_and_versions(cache):
+    from uv_cache_warden import report
+
+    cache.add_package("zope.interface", archive_id="shared", version="1.0")
+    cache.add_package("ZOPE_INTERFACE", archive_id="shared", version="2.0")
+    result = report.scan(cache.layout())
+    assert set(result.packages) == {"zope-interface"}
+    assert result.attribution.sole_owner("shared") == "zope-interface"
+    assert result.packages["zope-interface"].versions == 2
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX archive references are symlinks")
+@pytest.mark.parametrize("target", ["archive-v9/abc123", "archive-vbad/abc123", "archive-v0/abc123/extra"])
+def test_symlink_archive_references_validate_version_and_shape(tmp_path, target):
+    link = tmp_path / "entry"
+    link.symlink_to(target)
+    assert read_link(link, archive_version=0) is None
 
 
 def test_dangling_link_is_counted_not_attributed(cache):

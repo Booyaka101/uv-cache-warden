@@ -17,7 +17,7 @@ from . import __version__, report as report_mod
 from .discovery import PROTECTED_PREFIXES, DiscoveryError, discover_cache_dir, load_layout
 from .sizing import POSIX, format_size
 from .style import Style, labelled
-from .uvcmd import Uv, UvError, UvNotFound
+from .uvcmd import DEFAULT_TIMEOUT, Uv, UvError
 
 OK = "ok"
 WARN = "warn"
@@ -107,6 +107,7 @@ def diagnose(
     cache_dir: Optional[Path] = None,
     uv_path: Optional[str] = None,
     progress: Optional[Callable[[int], None]] = None,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> Diagnosis:
     result = Diagnosis()
     result.add(
@@ -123,16 +124,15 @@ def diagnose(
 
     uv: Optional[Uv] = None
     try:
-        uv = Uv.discover(uv_path, echo=False)
+        uv = Uv.discover(uv_path, echo=False, timeout=timeout)
         result.add("uv", OK, "{} at {}".format(uv.version(), uv.executable), path=uv.executable)
-    except UvNotFound as exc:
-        result.add("uv", FAIL, str(exc))
     except UvError as exc:
         result.add("uv", FAIL, str(exc))
+        uv = None
 
     try:
         root, source = discover_cache_dir(uv=uv, override=cache_dir)
-    except DiscoveryError as exc:
+    except (DiscoveryError, UvError) as exc:
         result.add("cache directory", FAIL, str(exc))
         return result
     result.add("cache directory", OK, "{} (from {})".format(root, source), path=str(root))
@@ -161,7 +161,11 @@ def diagnose(
             names=sorted(layout.unknown),
         )
 
-    scan = report_mod.scan(layout, uv, progress=progress)
+    try:
+        scan = report_mod.scan(layout, uv, progress=progress)
+    except UvError as exc:
+        result.add("cache scan", FAIL, str(exc))
+        return result
     # Biggest first: which bucket is eating the disk is the only reason to read this line.
     inventory = "  ".join(
         "{} {}".format(layout.bucket_names.get(name, name), format_size(usage.disk_bytes))

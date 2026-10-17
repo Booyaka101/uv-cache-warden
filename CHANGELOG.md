@@ -4,6 +4,49 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-10-17
+
+### Changed
+
+- Over-budget real GC now runs native `uv cache prune` before selecting any package. It
+  re-measures and refreshes bucket layout and attribution even after a returned prune failure.
+  If pruning meets the budget, no package clean is issued. A final prune runs only
+  after at least one successful package clean. `--no-prune` disables both stages.
+- Dry runs retain measured after-size and existing package projections, but explicitly warn
+  that pruning in a real run may make those projected evictions unnecessary.
+- The Action defaults to 1.1.0 and includes prune stages and conditional projections in its
+  summary, without changing its existing outputs. Documentation and terminal captures use a
+  real uv 0.13.1 scratch-cache run with successful offline reinstall.
+
+### Added
+
+- Additive JSON fields `prune_steps` (stage, status, diagnostic and measured after-size) and
+  `eviction_projection_conditional`. `pruned` remains true when any stage succeeds;
+  `prune_detail` aggregates stage-labelled failures.
+- Regression checks for prune-only preservation, partial failure, refreshed stale buckets,
+  dry-run file invariance, fatal subprocess errors and Action summaries. CI pins uv 0.13.1;
+  integration subprocess failures fail rather than silently skip.
+- Action `no-prune` input for parity with the CLI, defaulting to false.
+
+### Fixed
+
+- Timeouts and missing executables now propagate through discovery, scanning and GC
+  measurement to the CLI instead of falling back and potentially continuing mutation.
+  Ordinary measurement failures still fall back to the existing filesystem walk.
+- Previously attempted names no longer consume later rounds' projected savings. Failed
+  cleans are not retried, and surviving eligible packages can be considered within the
+  existing three-round limit.
+- Failed Action invocations no longer emit stale outputs or summaries from a previous run.
+- Post-mutation inventory refresh accepts a cache whose last recognized bucket uv removed;
+  initial discovery still refuses directories without recognized cache buckets.
+- Action result parsing and output-write failures now fail the step instead of being masked.
+- Cancellation stops and reaps the uv subprocess. All commands, including `doctor`, honor
+  validated finite positive timeouts; diagnostic subprocess failures stay structured.
+- Package aliases share normalized attribution and keep/min-age protection. Unknown archive
+  referrers prevent sole-ownership claims, and stale POSIX archive links are ignored.
+- Byte budgets above float's exact integer range retain their precision. Overflowing size
+  and duration literals return validation errors rather than tracebacks or infinite ages.
+
 ## [1.0.3] - 2026-09-02
 
 ### Changed
@@ -88,6 +131,7 @@ First release.
   previously printed the projection and stopped, which read as success even while `--fail-over`
   was exiting 2.
 
+[1.1.0]: https://github.com/Booyaka101/uv-cache-warden/compare/v1.0.3...upgrade/prune-first-1.1.0
 [1.0.3]: https://github.com/Booyaka101/uv-cache-warden/releases/tag/v1.0.3
 [1.0.2]: https://github.com/Booyaka101/uv-cache-warden/releases/tag/v1.0.2
 [1.0.1]: https://github.com/Booyaka101/uv-cache-warden/releases/tag/v1.0.1
